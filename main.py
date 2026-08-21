@@ -51,7 +51,6 @@ from bot.handlers.autopost import autopost_worker
 from bot.handlers.assistant import assistant_status_watcher
 from bot.handlers.scheduler import scheduler_worker
 from bot.handlers.stats import stats_saver
-from bot.handlers.automation_engine import automation_scheduler_worker
 
 from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError
 
@@ -89,7 +88,6 @@ async def main():
     client.loop.create_task(assistant_status_watcher())
     client.loop.create_task(scheduler_worker())
     client.loop.create_task(stats_saver())
-    client.loop.create_task(automation_scheduler_worker())
     try:
         await client.run_until_disconnected()
     finally:

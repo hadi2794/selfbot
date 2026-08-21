@@ -22,4 +22,3 @@ from . import stats  # noqa: F401
 from . import scheduler  # noqa: F401
 from . import help  # noqa: F401
 from . import panel  # noqa: F401
-from . import automation  # noqa: F401

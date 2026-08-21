@@ -14,7 +14,7 @@ from ..storage.autopost_store import (
     add_autopost_chat,
     remove_autopost_chat,
     clear_autopost_chats,
-    _reset_autopost_timer,
+    reset_autopost_timer as _reset_autopost_timer,
     get_next_run,
     get_force_now,
     set_force_now,

@@ -56,7 +56,7 @@ async def clear_autopost_chats() -> None:
     await autopost_repo.clear_chats()
 
 
-def _reset_autopost_timer():
+def reset_autopost_timer():
     global _autopost_next_run
     _autopost_next_run = time.time() + max(
         autopost_state["interval_minutes"], config.AUTOPOST_MIN_INTERVAL_MINUTES
