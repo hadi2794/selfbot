@@ -20,6 +20,7 @@ from .. import runtime
 from ..config import PREFIX, TIMEZONE_OFFSET
 from ..runtime import client
 from ..storage.scheduler_store import create_job, delete_job, get_job, list_due_jobs, list_jobs
+from ..storage.settings_toggles import toggles
 from ..storage.stats_store import record_error as _record_error
 from ..utils import pat
 
@@ -214,6 +215,9 @@ async def scheduler_worker():
     from .. import health
     while True:
         await asyncio.sleep(15)
+        health.update_worker_status("scheduler", "ok")
+        if not toggles["scheduler_enabled"]:
+            continue
         now_utc = dt.datetime.now(dt.timezone.utc)
         try:
             due = await list_due_jobs(now_utc)
@@ -222,7 +226,6 @@ async def scheduler_worker():
             _record_error()
             health.update_worker_status("scheduler", "error", str(e))
             continue
-        health.update_worker_status("scheduler", "ok")
 
         for job in due:
             text = job.text if job.kind == "schedule" else f"🔔 **یادآوری**\n\n{job.text}"

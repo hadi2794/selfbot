@@ -8,6 +8,7 @@ from telethon import events
 from .. import config
 from ..config import PREFIX
 from ..runtime import client, START_TIME
+from ..storage.settings_toggles import toggles
 from ..storage.stats_store import (
     STATS,
     save_stats,
@@ -27,6 +28,8 @@ async def stats_collector(event):
     دستور پر می‌کنه)، پس تایپ‌های اشتباه با پیشوند به‌اشتباه به‌عنوان دستورِ
     اجراشده شمرده نمی‌شن.
     """
+    if not toggles["stats_enabled"]:
+        return
     _record_message(event)
     if event.out and event.raw_text and event.raw_text.startswith(PREFIX):
         rest = event.raw_text[len(PREFIX):]

@@ -7,12 +7,42 @@ from typing import List, Dict, Any
 
 from telethon import events
 
+from .. import runtime
 from ..config import PREFIX
+from ..notification_engine import trigger_notifications
 from ..runtime import client
+from ..storage.settings_toggles import toggles
+from ..storage.stats_store import record_error as _record_error
 from ..utils import pat
 from ..repositories import notification_repo
 
 logger = logging.getLogger("selfbot.handlers.notifications")
+
+
+@client.on(events.NewMessage(incoming=True))
+async def notifications_incoming_trigger(event):
+    """
+    هر پیامِ ورودی رو به موتورِ اعلان پاس می‌ده تا اگه قانونِ فعالی
+    (message/keyword/user) روش match بشه، عملیاتش (notify/save/forward/reply)
+    اجرا بشه. بدونِ این هندلر، `.اعلان جدید` فقط قانون می‌ساخت ولی هیچ‌وقت
+    هیچی اجرا نمی‌شد.
+    """
+    if not toggles["notifications_enabled"]:
+        return
+    sender_id = event.sender_id
+    if sender_id is None or sender_id == runtime.SELF_ID:
+        return
+    context = {
+        "chat_id": event.chat_id,
+        "message_id": event.id,
+        "sender_id": sender_id,
+        "text": event.raw_text or "",
+    }
+    try:
+        await trigger_notifications(context)
+    except Exception:
+        _record_error()
+        logger.exception("خطا در اجرای موتورِ اعلان برای پیامِ ورودی")
 
 
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["اعلان", "notif"])))
@@ -48,12 +78,13 @@ async def _show_rules(event):
             f"🕳️ هیچ قانونی تعریف نشده.\n\n"
             f"• ایجاد قانون: `{PREFIX}اعلان جدید <نام> <نوع> <مقدار> <عملیات>`\n"
             f"• مثال: `{PREFIX}اعلان جدید vip keyword VPN notify`\n\n"
-            f"⚠️ توجه: فعلاً این قوانین فقط ذخیره می‌شن؛ موتورِ اجرایی‌شون هنوز وصل نیست "
-            f"(برای یه نسخه‌ی کاملاً کارکننده از همین ایده، فعلاً از `{PREFIX}اتوماسیون` "
-            f"با event=message و action=notify استفاده کن)."
+            f"انواع: message (هر پیام), keyword (شاملِ یه کلمه), user (شناسه‌ی عددیِ فرستنده)\n"
+            f"عملیات: notify (پیام به خودت), save (ذخیره در اینباکس), forward (فوروارد به خودت), "
+            f"reply (پاسخِ خودکار توی همون چت)\n"
+            f"⚠️ نوعِ `time` فعلاً پشتیبانی نمی‌شه (نیازمندِ زمان‌بندِ جداگونه‌ست)."
         )
 
-    lines = ["🔔 **مرکز اعلان‌ها**", "⚠️ فعلاً فقط ذخیره می‌شن؛ موتورِ اجرایی‌شون وصل نیست (پایین رو ببین)", ""]
+    lines = ["🔔 **مرکز اعلان‌ها**", ""]
 
     for rule in rules:
         status = "✅" if rule.enabled else "❌"

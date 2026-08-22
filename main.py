@@ -46,6 +46,7 @@ from bot.runtime import (
 )
 from bot.db.bootstrap import load_all_persistent_state
 from bot.db.engine import dispose_engine
+from bot.plugin_loader import load_all_plugins
 from bot.clock import clock_updater
 from bot.handlers.autopost import autopost_worker
 from bot.handlers.assistant import assistant_status_watcher
@@ -66,6 +67,12 @@ async def main():
     # باید قبل از استارت شدنِ تسک‌های پس‌زمینه انجام بشه، وگرنه اون تسک‌ها با
     # مقادیر پیش‌فرض (نه آخرین وضعیتِ ذخیره‌شده در PostgreSQL) شروع می‌کنن.
     await load_all_persistent_state()
+
+    # پلاگین‌های اختیاریِ کاربر (پوشه‌ی plugins/ کنارِ bot/) - اگه پوشه وجود
+    # نداشته باشه یا خالی باشه، بدونِ خطا رد می‌شه؛ صرفاً یه قابلیتِ اختیاریه.
+    loaded_plugins = await load_all_plugins()
+    if loaded_plugins:
+        logger.info("پلاگین‌های بارگذاری‌شده: %s", ", ".join(loaded_plugins.keys()))
 
     me = await client.get_me()
     set_self_id(me.id)

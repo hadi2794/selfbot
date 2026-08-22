@@ -19,6 +19,7 @@ from ..storage.assistant_store import init_assistant_state
 from ..storage.autopost_store import init_autopost_state
 from ..storage.font_store import init_font_state
 from ..storage.group_guard_store import init_group_guard_state
+from ..storage.settings_toggles import init_settings_toggles
 from ..storage.stats_store import init_stats
 
 logger = logging.getLogger("selfbot.db")
@@ -31,6 +32,7 @@ async def load_all_persistent_state() -> None:
     await init_clock_state()
     await init_group_guard_state()
     await init_stats()
+    await init_settings_toggles()
     logger.info(
-        "همه‌ی وضعیت‌های دائمی (منشی/ارسال‌خودکار/فونت/ساعت/مدیریت‌گروه/آمار) از PostgreSQL بارگذاری شدن"
+        "همه‌ی وضعیت‌های دائمی (منشی/ارسال‌خودکار/فونت/ساعت/مدیریت‌گروه/آمار/سوییچ‌های سراسری) از PostgreSQL بارگذاری شدن"
     )

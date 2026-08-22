@@ -12,7 +12,6 @@ from .. import ai
 from ..config import PREFIX
 from ..runtime import client
 from ..utils import pat
-from ..repositories import settings_repo
 
 logger = logging.getLogger("selfbot.handlers.smart_reply")
 
@@ -55,19 +54,13 @@ async def smart_reply_handler(event):
 
     await event.edit("🤔 در حال تولید پاسخ هوشمند...")
 
-    # دریافت تنظیمات AI
-    ai_mode = await settings_repo.get_setting("ai_mode", "false")
-    if ai_mode != "true":
-        # بررسی AI_API_KEY
-        try:
-            from .. import config
-            if not config.AI_API_KEY:
-                raise Exception("AI_API_KEY تنظیم نشده")
-        except Exception:
-            return await event.edit(
-                "⚠️ **قابلیت هوش مصنوعی غیرفعال است**\n"
-                "برای فعال‌سازی، متغیر `AI_API_KEY` را تنظیم کنید."
-            )
+    # بررسیِ در دسترس‌بودنِ هوش مصنوعی (این دستور مستقل از سوییچِ ai_modeِ منشیه)
+    from .. import config
+    if not config.AI_API_KEY:
+        return await event.edit(
+            "⚠️ **قابلیت هوش مصنوعی غیرفعال است**\n"
+            "برای فعال‌سازی، متغیر `AI_API_KEY` را تنظیم کنید."
+        )
 
     # ساخت پرامپت
     mode_desc = MODES.get(mode, MODES["دوستانه"])

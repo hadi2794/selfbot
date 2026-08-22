@@ -38,4 +38,5 @@ from . import (
     global_search,
     notifications,
     automation,
+    plugins_cmd,
 )

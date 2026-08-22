@@ -1,5 +1,13 @@
 """
-دستور .تنظیمات - پنل تنظیمات یکپارچه
+دستور .تنظیمات - پنل تنظیماتِ یکپارچه.
+
+این پنل دیگه یه دفترچه‌ی جدا نیست: هر کلید مستقیماً به state واقعیِ همون
+بخش وصله (دقیقاً همون چیزی که `.منشی`/`.ارسال‌خودکار`/`.قلم` خودشون
+دست‌کاری می‌کنن)، پس عوض‌کردنِ یه مقدار اینجا خودِ اون قابلیت رو واقعاً
+روشن/خاموش می‌کنه - نه یه کپیِ نمایشی که فقط نشون داده می‌شه.
+
+`guard_enabled` عمداً اینجا نیست: محافظِ گروه (فیلترلینک/خوش‌آمد) سراسری
+نیست، هر گروه جدا تنظیم می‌شه (`.فیلترلینک`, `.خوش‌آمد` توی همون گروه).
 """
 import json
 import logging
@@ -8,22 +16,40 @@ from telethon import events
 
 from ..config import PREFIX
 from ..runtime import client
+from ..storage.assistant_store import assistant_state, save_assistant
+from ..storage.autopost_store import autopost_state, save_autopost
+from ..storage.font_store import font_state, save_font_state
+from ..storage.settings_toggles import set_toggle, toggles
 from ..utils import pat
-from ..repositories import settings_repo
 
 logger = logging.getLogger("selfbot.handlers.settings_center")
 
 # کلیدهای تنظیمات
 SETTINGS_KEYS = {
     "assistant_mode": "🤖 منشی",
-    "ai_mode": "🧠 AI",
-    "scheduler_enabled": "⏰ Scheduler",
-    "autopost_enabled": "🔁 Autopost",
-    "font_enabled": "🎨 Font",
-    "guard_enabled": "🛡 محافظ",
+    "ai_mode": "🧠 AI منشی",
+    "scheduler_enabled": "⏰ زمان‌بند/یادآوری",
+    "autopost_enabled": "🔁 ارسالِ خودکار",
+    "font_enabled": "🎨 فونتِ خودکار",
     "stats_enabled": "📊 آمار",
-    "notifications_enabled": "🔔 اعلان‌ها",
+    "notifications_enabled": "🔔 موتورِ اعلان",
 }
+
+_TRUE_WORDS = ("true", "on", "1", "روشن", "فعال")
+_FALSE_WORDS = ("false", "off", "0", "خاموش", "غیرفعال")
+
+
+def _live_status() -> dict:
+    """وضعیتِ واقعیِ همین‌الانِ هر بخش (نه چیزی که قبلاً توی settings ذخیره شده)."""
+    return {
+        "assistant_mode": assistant_state["enabled"],
+        "ai_mode": assistant_state["ai_mode"],
+        "scheduler_enabled": toggles["scheduler_enabled"],
+        "autopost_enabled": autopost_state["enabled"],
+        "font_enabled": font_state["enabled"],
+        "stats_enabled": toggles["stats_enabled"],
+        "notifications_enabled": toggles["notifications_enabled"],
+    }
 
 
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["تنظیمات", "settings"])))
@@ -37,46 +63,68 @@ async def settings_handler(event):
     if sub in ("تنظیم", "set"):
         return await _set_setting(event, args[1] if len(args) > 1 else "", args[2] if len(args) > 2 else "")
 
-    # نمایش پنل اصلی
-    all_settings = await settings_repo.get_all_settings()
-    lines = [
-        "⚙️ **تنظیمات یکپارچه**",
-        "⚠️ این کلیدها فقط یه یادداشتِ متنی/key-value هستن؛ فعلاً به سوییچِ واقعیِ "
-        "خودِ اون بخش‌ها (مثلاً `.منشی`, `.قلم`, `.زمان‌بند`) وصل نیستن - عوض‌کردنِ "
-        "یه مقدار اینجا خودِ اون قابلیت رو روشن/خاموش نمی‌کنه.",
-        "",
-    ]
+    # نمایش پنل اصلی - همیشه از رویِ state واقعی، نه یه کپیِ قدیمی
+    status = _live_status()
+    lines = ["⚙️ **تنظیمات یکپارچه**", ""]
 
     for key, display in SETTINGS_KEYS.items():
-        value = all_settings.get(key, "غیرفعال")
-        status = "✅ فعال" if value == "true" else "❌ غیرفعال" if value == "false" else value
-        lines.append(f"• {display}: {status}")
+        enabled = status[key]
+        lines.append(f"• {display}: {'✅ فعال' if enabled else '❌ غیرفعال'}")
 
     lines.append("")
-    lines.append(f"برای تغییر: `{PREFIX}تنظیمات تنظیم <key> <value>`")
+    lines.append(f"برای تغییر: `{PREFIX}تنظیمات تنظیم <key> <true|false>`")
     lines.append(f"مثال: `{PREFIX}تنظیمات تنظیم assistant_mode true`")
     lines.append("")
     lines.append("📋 کلیدهای موجود:")
     for key, display in SETTINGS_KEYS.items():
         lines.append(f"  `{key}` ← {display}")
+    lines.append("")
+    lines.append(
+        f"🛡 محافظِ گروه (فیلترلینک/خوش‌آمد) سراسری نیست؛ هر گروه جدا با "
+        f"`{PREFIX}فیلترلینک` / `{PREFIX}خوش‌آمد` توی همون گروه تنظیم می‌شه."
+    )
 
     await event.edit("\n".join(lines))
 
 
 async def _set_setting(event, key: str, value: str):
-    """تغییر یک تنظیم."""
+    """تغییر یک تنظیم - مستقیماً روی stateِ واقعیِ همون بخش اعمال می‌شه."""
     if not key or not value:
-        return await event.edit(f"❌ استفاده: `{PREFIX}تنظیمات تنظیم <key> <value>`")
+        return await event.edit(f"❌ استفاده: `{PREFIX}تنظیمات تنظیم <key> <true|false>`")
 
     if key not in SETTINGS_KEYS:
         return await event.edit(f"❌ کلید نامعتبر. کلیدهای موجود: {', '.join(SETTINGS_KEYS.keys())}")
 
-    await settings_repo.set_setting(key, value)
-    await event.edit(f"✅ تنظیم `{key}` به `{value}` تغییر کرد.")
+    normalized = value.strip().lower()
+    if normalized in _TRUE_WORDS:
+        enabled = True
+    elif normalized in _FALSE_WORDS:
+        enabled = False
+    else:
+        return await event.edit(f"❌ مقدار باید true/false (یا on/off, روشن/خاموش) باشه، نه `{value}`")
+
+    if key == "assistant_mode":
+        assistant_state["enabled"] = enabled
+        assistant_state["auto_detect"] = False  # قفلِ دستی، دقیقاً هم‌رفتار با `.منشی روشن/خاموش`
+        if enabled:
+            assistant_state["replied"] = set()
+        await save_assistant()
+    elif key == "ai_mode":
+        assistant_state["ai_mode"] = enabled
+        await save_assistant()
+    elif key == "autopost_enabled":
+        autopost_state["enabled"] = enabled
+        await save_autopost()
+    elif key == "font_enabled":
+        font_state["enabled"] = enabled
+        await save_font_state()
+    elif key in ("scheduler_enabled", "stats_enabled", "notifications_enabled"):
+        await set_toggle(key, enabled)
+
+    await event.edit(f"✅ {SETTINGS_KEYS[key]} → {'فعال ✅' if enabled else 'غیرفعال ❌'}")
 
 
 async def _save_settings(event, args):
-    """ذخیره همه تنظیمات فعلی."""
-    all_settings = await settings_repo.get_all_settings()
-    backup = json.dumps(all_settings, ensure_ascii=False, indent=2)
+    """خروجیِ JSON از وضعیتِ فعلیِ همه‌ی بخش‌ها (برای مشاهده/بکاپِ دستی)."""
+    backup = json.dumps(_live_status(), ensure_ascii=False, indent=2)
     await event.edit(f"📋 تنظیمات فعلی:\n```json\n{backup}\n```")

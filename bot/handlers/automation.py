@@ -76,7 +76,10 @@ async def _show_rules(event):
             f"• ایجاد قانون: `{PREFIX}اتوماسیون جدید <نام> <رویداد> <عملیات> <مقدار>`\n"
             f"• مثال: `{PREFIX}اتوماسیون جدید سلام message reply سلام 👋`\n\n"
             f"رویدادها: message, schedule, command, user_join, user_leave\n"
-            f"عملیات: reply, ai, note, schedule, notify, guard, backup, autopost"
+            f"عملیات: reply, ai, note, schedule, notify, guard, backup, autopost\n"
+            f"⚠️ فعلاً فقط رویدادِ `message` واقعاً trigger می‌شه (روی هر پیامِ ورودی)؛ "
+            f"بقیه‌ی رویدادها (schedule/command/user_join/user_leave) ذخیره می‌شن ولی هنوز به منبعِ "
+            f"رویدادِ خودشون وصل نیستن."
         )
 
     lines = ["⚡ **موتور اتوماسیون**", ""]
