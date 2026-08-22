@@ -86,6 +86,28 @@ async def weather_handler(event):
         await event.edit("❌ خطا در دریافت آب‌وهوا")
 
 
+async def translate_text(lang: str, text: str) -> str:
+    """
+    هسته‌ی خالصِ ترجمه (بدون event) - هم توسطِ `.ترجمه` و هم توسطِ روترِ
+    هوشمند (`.هوش`) استفاده می‌شه. روی خطا Exception می‌ندازه.
+    """
+    session = await get_http_session()
+    timeout = aiohttp.ClientTimeout(total=10)
+    params = {"client": "gtx", "sl": "auto", "tl": lang, "dt": "t", "q": text}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with session.get(
+        "https://translate.googleapis.com/translate_a/single",
+        params=params, headers=headers, timeout=timeout,
+    ) as r:
+        if r.status != 200:
+            raise ValueError(f"HTTP {r.status}")
+        data = await r.json(content_type=None)
+    translated = "".join(seg[0] for seg in data[0] if seg and seg[0])
+    if not translated.strip():
+        raise ValueError("پاسخِ خالی")
+    return translated
+
+
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["ترجمه", "tr"])))
 async def translate_handler(event):
     args = event.pattern_match.group(1)
@@ -99,20 +121,7 @@ async def translate_handler(event):
     if not lang or not text:
         return await event.edit(f"مثال: `{PREFIX}ترجمه en سلام دنیا` یا با ریپلای: `{PREFIX}ترجمه en`")
     try:
-        session = await get_http_session()
-        timeout = aiohttp.ClientTimeout(total=10)
-        params = {"client": "gtx", "sl": "auto", "tl": lang, "dt": "t", "q": text}
-        headers = {"User-Agent": "Mozilla/5.0"}
-        async with session.get(
-            "https://translate.googleapis.com/translate_a/single",
-            params=params, headers=headers, timeout=timeout,
-        ) as r:
-            if r.status != 200:
-                raise ValueError(f"HTTP {r.status}")
-            data = await r.json(content_type=None)
-        translated = "".join(seg[0] for seg in data[0] if seg and seg[0])
-        if not translated.strip():
-            raise ValueError("پاسخِ خالی")
+        translated = await translate_text(lang, text)
         await event.edit(f"🌐 ترجمه ({lang}):\n{translated}")
     except Exception:
         await event.edit("❌ خطا در ترجمه (زبانِ مقصد رو با کدِ دو-حرفی بده، مثلاً en/fa/ar)")
@@ -127,6 +136,13 @@ async def google_handler(event):
     await event.edit(f"🔍 نتایج گوگل برای: {q}\n{link}")
 
 
+def generate_password(length: int = 16) -> str:
+    """هسته‌ی خالصِ تولیدِ رمز - هم توسطِ `.رمزعبور` و هم روترِ هوشمند استفاده می‌شه."""
+    length = max(4, min(length, 128))
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
+    return "".join(random.SystemRandom().choice(alphabet) for _ in range(length))
+
+
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["رمزعبور", "genpass"])))
 async def genpass_handler(event):
     arg = (event.pattern_match.group(1) or "").strip()
@@ -136,10 +152,8 @@ async def genpass_handler(event):
             length = int(arg)
         except ValueError:
             return await event.edit(f"مثال: `{PREFIX}رمزعبور 20`")
-        length = max(4, min(length, 128))
-    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
-    pwd = "".join(random.SystemRandom().choice(alphabet) for _ in range(length))
-    await event.edit(f"🔐 رمز عبور تصادفی ({length} کاراکتر):\n`{pwd}`")
+    pwd = generate_password(length)
+    await event.edit(f"🔐 رمز عبور تصادفی ({len(pwd)} کاراکتر):\n`{pwd}`")
 
 
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["هش", "hash"])))
@@ -207,6 +221,22 @@ async def count_handler(event):
     )
 
 
+async def convert_currency(amount: float, src: str, dst: str) -> tuple[float, float]:
+    """
+    هسته‌ی خالصِ تبدیلِ ارز (بدون event) - (converted, rate) رو برمی‌گردونه.
+    هم توسطِ `.ارز` و هم توسطِ روترِ هوشمند (`.هوش`) استفاده می‌شه.
+    روی خطا یا کدِ ارزِ نامعتبر ValueError می‌ندازه.
+    """
+    session = await get_http_session()
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with session.get(f"https://open.er-api.com/v6/latest/{src}", timeout=timeout) as r:
+        data = await r.json(content_type=None)
+    if data.get("result") != "success" or dst not in data.get("rates", {}):
+        raise ValueError("کد ارز نامعتبره یا در دسترس نیست")
+    rate = data["rates"][dst]
+    return amount * rate, rate
+
+
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["ارز", "currency"])))
 async def currency_handler(event):
     args = event.pattern_match.group(1)
@@ -221,15 +251,10 @@ async def currency_handler(event):
         return await event.edit(f"مثال: `{PREFIX}ارز 10 USD IRR`")
     src, dst = parts[1].upper(), parts[2].upper()
     try:
-        session = await get_http_session()
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with session.get(f"https://open.er-api.com/v6/latest/{src}", timeout=timeout) as r:
-            data = await r.json(content_type=None)
-        if data.get("result") != "success" or dst not in data.get("rates", {}):
-            return await event.edit("❌ کد ارز نامعتبره یا در دسترس نیست")
-        rate = data["rates"][dst]
-        converted = amount * rate
+        converted, rate = await convert_currency(amount, src, dst)
         await event.edit(f"💱 {amount:g} {src} = **{converted:,.4f} {dst}**\n(نرخ: 1 {src} = {rate:g} {dst})")
+    except ValueError as e:
+        await event.edit(f"❌ {e}")
     except Exception:
         await event.edit("❌ خطا در دریافت نرخ ارز")
 
