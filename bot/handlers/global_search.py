@@ -10,6 +10,7 @@ from telethon import errors, events
 from telethon.tl.functions.contacts import SearchRequest as ContactsSearchRequest
 from telethon.tl.functions.messages import SearchGlobalRequest
 from telethon.tl.types import (
+    InputMessagesFilterDocument,
     InputMessagesFilterEmpty,
     InputPeerEmpty,
     PeerChannel,
@@ -89,6 +90,21 @@ def _fmt_item(text: str, link: str = None) -> str:
     return text
 
 
+def _extract_filename(m) -> str:
+    """اگه پیام یه فایل/مدیا داشته باشه، اسمِ فایلش رو برمی‌گردونه (وگرنه None).
+    برای عکس/ویدیوهای بدون attribute فایل‌نیم (مثل عکس‌های معمولی)، چیزی
+    برنمی‌گردونه - چون خودِ تلگرام هم اسمی براشون نداره که بشه باهاش سرچ کرد."""
+    media = getattr(m, "media", None)
+    doc = getattr(media, "document", None) if media else None
+    if not doc:
+        return None
+    for attr in getattr(doc, "attributes", []) or []:
+        fname = getattr(attr, "file_name", None)
+        if fname:
+            return fname
+    return None
+
+
 async def _search_local(query: str) -> Dict[str, List[str]]:
     """جستجو توی داده‌های داخلیِ ربات (دیتابیسِ خودش)."""
     results: Dict[str, List[str]] = {}
@@ -164,38 +180,69 @@ async def _search_telegram_messages(query: str, limit: int = 20) -> List[str]:
     همون چیزی که نوارِ جستجویِ خودِ اپ تلگرام هم استفاده می‌کنه). چون فقط
     روی چت‌های خودت کار می‌کنه (نه هر چیزی توی کلِ تلگرام)، نتیجه رو جدا از
     جستجوی کانال/گروه گذاشتم.
-    """
-    try:
-        result = await client(
-            SearchGlobalRequest(
-                q=query,
-                filter=InputMessagesFilterEmpty(),
-                min_date=None,
-                max_date=None,
-                offset_rate=0,
-                offset_peer=InputPeerEmpty(),
-                offset_id=0,
-                limit=limit,
-            )
-        )
-    except errors.FloodWaitError as e:
-        logger.warning("FloodWait در جستجوی پیام‌های تلگرام: %s ثانیه", e.seconds)
-        return []
-    except Exception:
-        logger.exception("خطا در جستجوی پیام‌های تلگرام")
-        return []
 
-    messages = getattr(result, "messages", []) or []
-    chats_map = {c.id: c for c in getattr(result, "chats", [])}
-    users_map = {u.id: u for u in getattr(result, "users", [])}
+    دو تا درخواستِ جدا می‌زنیم:
+    - InputMessagesFilterEmpty: متن/کپشنِ پیام‌ها
+    - InputMessagesFilterDocument: اسمِ فایل‌ها/مدیا (سرورِ تلگرام موقعِ فیلترِ
+      Document، q رو روی filename هم چک می‌کنه؛ برای همینه که سرچِ «اسمِ فایل»
+      توی خودِ اپِ تلگرام هم همین‌جوری کار می‌کنه)
+    نتایج بر اساسِ (چت، شناسه‌ی پیام) دیدوپ می‌شن که یه پیام دوبار نیاد.
+    """
+    seen = set()
+    all_messages = []
+    chats_map: Dict[int, Any] = {}
+    users_map: Dict[int, Any] = {}
+
+    for filt in (InputMessagesFilterEmpty(), InputMessagesFilterDocument()):
+        try:
+            result = await client(
+                SearchGlobalRequest(
+                    q=query,
+                    filter=filt,
+                    min_date=None,
+                    max_date=None,
+                    offset_rate=0,
+                    offset_peer=InputPeerEmpty(),
+                    offset_id=0,
+                    limit=limit,
+                )
+            )
+        except errors.FloodWaitError as e:
+            logger.warning("FloodWait در جستجوی پیام‌های تلگرام: %s ثانیه", e.seconds)
+            continue
+        except Exception:
+            logger.exception("خطا در جستجوی پیام‌های تلگرام")
+            continue
+
+        for c in getattr(result, "chats", []) or []:
+            chats_map[c.id] = c
+        for u in getattr(result, "users", []) or []:
+            users_map[u.id] = u
+
+        for m in getattr(result, "messages", []) or []:
+            peer = getattr(m, "peer_id", None)
+            key = (_peer_to_chat_id(peer), getattr(m, "id", None))
+            if key in seen:
+                continue
+            seen.add(key)
+            all_messages.append(m)
 
     items = []
-    for m in messages[:limit]:
+    for m in all_messages:
         text = (getattr(m, "message", "") or "").strip()
-        if not text:
+        filename = _extract_filename(m)
+        if not text and not filename:
             continue
+
         peer = getattr(m, "peer_id", None)
         chat_title = _peer_title(peer, chats_map, users_map) if peer else "نامشخص"
+
+        parts = []
+        if filename:
+            parts.append(f"📎 {filename}")
+        if text:
+            parts.append(f"{text[:80]}...")
+        body = " — ".join(parts)
 
         link = None
         chat_id = _peer_to_chat_id(peer) if peer else None
@@ -210,7 +257,7 @@ async def _search_telegram_messages(query: str, limit: int = 20) -> List[str]:
                 username = getattr(u, "username", None)
             link = _message_link(chat_id, message_id, username)
 
-        items.append(_fmt_item(f"«{chat_title}»: {text[:80]}...", link))
+        items.append(_fmt_item(f"«{chat_title}»: {body}", link))
     return items
 
 
