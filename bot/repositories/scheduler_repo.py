@@ -59,6 +59,24 @@ async def delete(job_id: int) -> bool:
         return True
 
 
+async def search_jobs(query: str, limit: int = 50) -> list[ScheduledJob]:
+    """جستجوی کارهای زمان‌بندی‌شده بر اساسِ متن (برای `.جستجو`)."""
+    async with session_scope() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(ScheduledJob)
+                    .where(ScheduledJob.text.ilike(f"%{query}%"))
+                    .order_by(ScheduledJob.run_at.asc())
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [_detached_copy(r) for r in rows]
+
+
 def _detached_copy(obj: ScheduledJob) -> ScheduledJob:
     """
     یه کپیِ ساده و detached (بدون وابستگی به session بسته‌شده) برمی‌گردونه، چون

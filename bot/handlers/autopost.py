@@ -124,8 +124,10 @@ async def autopost_handler(event):
 
 
 async def autopost_worker():
+    from .. import health
     while True:
         await asyncio.sleep(5)
+        health.update_worker_status("autopost", "ok")
         if not autopost_state["enabled"] or not autopost_state["chats"] or not autopost_state["text"]:
             continue
         if get_force_now() or time.time() >= get_next_run():

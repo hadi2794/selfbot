@@ -270,8 +270,10 @@ async def assistant_status_watcher():
     اگه با .assistant on یا .assistant off دستی قفلش کرده باشی (auto_detect
     خاموش)، این تابع اصلاً دست به enabled نمی‌زنه - حتی اگه آفلاین بشی.
     """
+    from .. import health
     while True:
         if not assistant_state["auto_detect"]:
+            health.update_worker_status("assistant", "ok")
             await asyncio.sleep(config.ASSISTANT_CHECK_INTERVAL)
             continue
         try:
@@ -289,7 +291,9 @@ async def assistant_status_watcher():
                 if new_enabled:
                     assistant_state["replied"] = set()  # نشست تازه = دوباره به همه جواب بده
                 assistant_state["enabled"] = new_enabled
-        except Exception:
+            health.update_worker_status("assistant", "ok")
+        except Exception as e:
             _record_error()
             logger.exception("خطا در بررسی وضعیت آنلاین/آفلاین")
+            health.update_worker_status("assistant", "error", str(e))
         await asyncio.sleep(config.ASSISTANT_CHECK_INTERVAL)

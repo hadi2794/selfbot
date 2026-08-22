@@ -1,24 +1,41 @@
 """
-Import همه‌ی زیرماژول‌های handlers کافیه تا دکوریتورهای @client.on ثبت بشن.
-main.py فقط کافیه `from bot import handlers` رو انجام بده.
+ثبت تمام هندلرهای دستورات سلف‌بات.
+هر فایل جدید باید در اینجا import شود تا دکوریتورهای @client.on فعال شوند.
 """
-from . import general  # noqa: F401
-from . import tools  # noqa: F401
-from . import notes  # noqa: F401
-from . import messages  # noqa: F401
-from . import fun  # noqa: F401
-from . import media  # noqa: F401
-from . import audio  # noqa: F401
-from . import font  # noqa: F401
-from . import profile  # noqa: F401
-from . import assistant  # noqa: F401
-from . import ai  # noqa: F401
-from . import command_router  # noqa: F401
-from . import admin  # noqa: F401
-from . import groupguard  # noqa: F401
-from . import backup  # noqa: F401
-from . import autopost  # noqa: F401
-from . import stats  # noqa: F401
-from . import scheduler  # noqa: F401
-from . import help  # noqa: F401
-from . import panel  # noqa: F401
+
+# هندلرهای اصلی
+from . import (
+    admin,
+    ai,
+    assistant,
+    audio,
+    autopost,
+    backup,
+    command_router,
+    font,
+    fun,
+    general,
+    groupguard,
+    help,
+    media,
+    messages,
+    notes,
+    panel,
+    profile,
+    scheduler,
+    stats,
+    tools,
+)
+
+# هندلرهای جدید (v9.3+)
+from . import (
+    health,
+    settings_center,
+    inbox,
+    smart_reply,
+    ai_memory,
+    user_profile,
+    global_search,
+    notifications,
+    automation,
+)

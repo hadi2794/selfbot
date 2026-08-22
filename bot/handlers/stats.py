@@ -112,6 +112,8 @@ async def stats_handler(event):
 
 async def stats_saver():
     """هر چند ثانیه یک‌بار آمار رو روی دیسک ذخیره می‌کنه تا با ری‌استارت/ری‌دیپلوی از دست نره."""
+    from .. import health
     while True:
         await asyncio.sleep(config.STATS_SAVE_INTERVAL)
         await save_stats()
+        health.update_worker_status("stats", "ok")

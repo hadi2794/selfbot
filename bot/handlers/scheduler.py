@@ -211,15 +211,18 @@ async def get_job_checked(job_id: int, kind: str):
 # ------------------------------------------------------ تسکِ پس‌زمینه ---
 async def scheduler_worker():
     """هر ۱۵ ثانیه چک می‌کنه ببینه کاری سر رسیده یا نه؛ اگه رسیده بفرسته و حذفش کنه."""
+    from .. import health
     while True:
         await asyncio.sleep(15)
         now_utc = dt.datetime.now(dt.timezone.utc)
         try:
             due = await list_due_jobs(now_utc)
-        except Exception:
+        except Exception as e:
             logger.exception("خطا در خوندنِ کارهای زمان‌بندی‌شده")
             _record_error()
+            health.update_worker_status("scheduler", "error", str(e))
             continue
+        health.update_worker_status("scheduler", "ok")
 
         for job in due:
             text = job.text if job.kind == "schedule" else f"🔔 **یادآوری**\n\n{job.text}"
