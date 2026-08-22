@@ -5,6 +5,7 @@ qrcode
 pillow
 edge-tts
 SpeechRecognition
+hafez
 
 # --- PostgreSQL persistence layer ---
 sqlalchemy>=2.0,<3.0

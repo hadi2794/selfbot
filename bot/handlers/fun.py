@@ -1,16 +1,20 @@
-"""۵) سرگرمی: write / type / reverse / mock / dice / coin / random / choose / rps / guess / slot / 8ball / love / wyr"""
+"""۵) سرگرمی: write / type / reverse / mock / dice / coin / random / choose / rps
+/ guess / slot / 8ball / love / wyr / quiz / fal"""
 import asyncio
 import hashlib
 import random
 import re
+import urllib.parse
 
+import aiohttp
 from telethon import errors, events
 from telethon.tl.types import InputMediaDice
 
 from ..config import PREFIX
-from ..runtime import client
+from ..runtime import client, get_http_session
 from ..storage.stats_store import record_error as _record_error
 from ..utils import pat
+from .. import ai
 
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["تایپ‌زنده", "write"])))
 async def write_handler(event):
@@ -414,3 +418,191 @@ _WYR_PROMPTS = [
 async def wyr_handler(event):
     a, b = random.choice(_WYR_PROMPTS)
     await event.edit(f"🤔 **این یا اون؟**\n\n1️⃣ {a}\n\nیا\n\n2️⃣ {b}")
+
+
+# ---------------------------------------------------------------------------
+# کوییز عمومی — با Open Trivia Database (opentdb.com، رایگان و بدون کلید)
+# ---------------------------------------------------------------------------
+
+QUIZ_GAMES = {}   # chat_id -> {"correct": int (۱ تا ۴), "answer_text": str}
+QUIZ_SCORES = {}  # chat_id -> {"correct": int, "total": int} - فقط توی حافظه (ری‌استارت پاک می‌شه)
+
+_QUIZ_TRANSLATE_SYSTEM_PROMPT = (
+    "شما مترجمی هستید که سوالِ کوییزهای انگلیسی رو به فارسیِ روان و طبیعی "
+    "ترجمه می‌کنه. اسم‌های خاص (افراد، مکان‌ها، فیلم‌ها، بازی‌ها و...) رو "
+    "همون‌طور نگه دار یا فقط تلفظِ فارسیش رو بنویس. خروجی رو دقیقاً و فقط "
+    "در همون قالبی که خواسته شده بده، بدون هیچ توضیحِ اضافه."
+)
+
+
+async def _translate_quiz(category: str, question: str, options: list[str]):
+    """
+    دسته/سوال/گزینه‌های کوییز رو (که از OpenTDB انگلیسی میان) با هسته‌ی
+    هوش‌مصنوعیِ داخلیِ ربات (همون bot/ai.py که `.پرسش` ازش استفاده می‌کنه)
+    به فارسی ترجمه می‌کنه. اگه AI غیرفعال باشه، خطا بده، یا خروجی قابلِ
+    پارس‌کردن نباشه، None برمی‌گردونه (یعنی نسخه‌ی انگلیسیِ اصلی نمایش داده بشه)
+    - هیچ‌وقت کوییز رو به‌خاطرِ خطای ترجمه از کار نمی‌ندازه.
+    """
+    prompt = (
+        f"دسته: {category}\n"
+        f"سوال: {question}\n"
+        "گزینه‌ها:\n"
+        + "\n".join(f"{i}) {opt}" for i, opt in enumerate(options, start=1))
+        + "\n\n"
+        "همه‌ی این‌ها رو به فارسیِ روان ترجمه کن. خروجی رو دقیقاً به همین "
+        "قالب بده (فقط ترجمه، خط به خط، بدونِ هیچ توضیحِ اضافه):\n"
+        "دسته: <ترجمه>\n"
+        "سوال: <ترجمه>\n"
+        + "\n".join(f"{i}) <ترجمه>" for i in range(1, len(options) + 1))
+    )
+    try:
+        answer = await ai.ask_ai(
+            [
+                {"role": "system", "content": _QUIZ_TRANSLATE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ]
+        )
+    except (ai.AIDisabledError, ai.AIRequestError):
+        return None
+    if not answer:
+        return None
+
+    t_category = None
+    t_question = None
+    t_options = {}
+    for line in answer.splitlines():
+        line = line.strip()
+        m_cat = re.match(r"^دسته\s*[:：]\s*(.+)$", line)
+        m_q = re.match(r"^سوال\s*[:：]\s*(.+)$", line)
+        m_opt = re.match(r"^(\d+)\s*[)\.]\s*(.+)$", line)
+        if m_cat:
+            t_category = m_cat.group(1).strip()
+        elif m_q:
+            t_question = m_q.group(1).strip()
+        elif m_opt:
+            idx = int(m_opt.group(1))
+            t_options[idx] = m_opt.group(2).strip()
+
+    if not t_question or len(t_options) != len(options):
+        return None
+    try:
+        ordered_options = [t_options[i] for i in range(1, len(options) + 1)]
+    except KeyError:
+        return None
+    return (t_category or category), t_question, ordered_options
+
+
+@client.on(events.NewMessage(outgoing=True, pattern=pat(["کوییز", "quiz"])))
+async def quiz_handler(event):
+    """
+    `.کوییز` یه سوالِ چهارگزینه‌ایِ تصادفی از Open Trivia Database می‌گیره،
+    `.کوییز <۱ تا ۴>` به سوالِ فعالِ همون چت جواب می‌ده.
+    """
+    arg = (event.pattern_match.group(1) or "").strip()
+    chat_id = event.chat_id
+
+    if arg.isdigit() and 1 <= int(arg) <= 4:
+        game = QUIZ_GAMES.get(chat_id)
+        if not game:
+            return await event.edit(
+                f"سوالِ فعالی نیست. بزن `{PREFIX}کوییز` تا یه سوالِ جدید بیاد."
+            )
+        chosen = int(arg)
+        del QUIZ_GAMES[chat_id]
+        score = QUIZ_SCORES.setdefault(chat_id, {"correct": 0, "total": 0})
+        score["total"] += 1
+        if chosen == game["correct"]:
+            score["correct"] += 1
+            return await event.edit(
+                f"✅ درسته! جواب «{game['answer_text']}» بود.\n"
+                f"📊 امتیازِ این چت: {score['correct']}/{score['total']}"
+            )
+        return await event.edit(
+            f"❌ نه. جوابِ درست، گزینه‌ی {game['correct']} («{game['answer_text']}») بود.\n"
+            f"📊 امتیازِ این چت: {score['correct']}/{score['total']}"
+        )
+
+    await event.edit("🎲 در حالِ گرفتنِ سوال...")
+    try:
+        session = await get_http_session()
+        async with session.get(
+            "https://opentdb.com/api.php",
+            params={"amount": 1, "type": "multiple", "encode": "url3986"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as r:
+            data = await r.json(content_type=None)
+    except errors.FloodWaitError:
+        raise
+    except Exception:
+        _record_error()
+        return await event.edit("❌ خطا در ارتباط با سرویسِ کوییز (opentdb.com)")
+
+    if data.get("response_code") != 0 or not data.get("results"):
+        return await event.edit("⚠️ سوالی پیدا نشد، دوباره امتحان کن")
+
+    q = data["results"][0]
+    unquote = urllib.parse.unquote
+    category = unquote(q.get("category", ""))
+    question = unquote(q.get("question", ""))
+    correct = unquote(q.get("correct_answer", ""))
+    options = [unquote(a) for a in q.get("incorrect_answers", [])] + [correct]
+    random.shuffle(options)
+    correct_index = options.index(correct) + 1
+
+    # نمایشِ سوال/گزینه‌ها به فارسی (اگه AI فعال باشه و ترجمه جواب بده)؛
+    # correct_index از رویِ متنِ اصلیِ انگلیسی حساب شده و دست‌نخورده می‌مونه،
+    # چون فقط متنِ نمایشی عوض می‌شه نه ترتیبِ گزینه‌ها.
+    await event.edit("🌐 در حالِ ترجمه...")
+    translated = await _translate_quiz(category, question, options)
+    if translated:
+        display_category, display_question, display_options = translated
+    else:
+        display_category, display_question, display_options = category, question, options
+
+    QUIZ_GAMES[chat_id] = {"correct": correct_index, "answer_text": display_options[correct_index - 1]}
+
+    lines = [f"❓ **کوییز** — _{display_category}_", "", display_question, ""]
+    for i, opt in enumerate(display_options, start=1):
+        lines.append(f"{i}) {opt}")
+    lines.append("")
+    lines.append(f"جواب رو با `{PREFIX}کوییز <عدد>` بده")
+    await event.edit("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# فال حافظ — با کتابخانه‌ی محلیِ `hafez` (دیتای گنجور، بدون نیاز به شبکه/کلید)
+# ---------------------------------------------------------------------------
+
+@client.on(events.NewMessage(outgoing=True, pattern=pat(["فال", "hafez"], arg=False)))
+async def hafez_fal_handler(event):
+    """
+    یه فالِ حافظِ تصادفی می‌گیره. برای این کار از پکیجِ `hafez` (روی PyPI)
+    استفاده می‌شه که دیتای غزلیات رو محلی نگه می‌داره (بر اساسِ گنجور) - پس
+    نیازی به اینترنت یا کلیدِ API نداره و همیشه در دسترسه.
+
+    نصب: `pip install hafez` (توی requirements.txt هم اضافه شده)
+    """
+    try:
+        import hafez
+    except ImportError:
+        return await event.edit(
+            "⚠️ کتابخانه‌ی `hafez` نصب نیست.\n"
+            "با `pip install hafez` نصبش کن (توی requirements.txt هم هست)."
+        )
+
+    try:
+        result = await asyncio.to_thread(hafez.omen)
+    except Exception:
+        _record_error()
+        return await event.edit("❌ خطا در گرفتنِ فال")
+
+    verses = result.get("poem") or []
+    if isinstance(verses, str):
+        verses = [v for v in verses.splitlines() if v.strip()]
+    poem_text = "\n".join(verses)
+    interpretation = (result.get("interpretation") or "").strip()
+
+    body = f"🔮 **فالِ حافظ**\n\n{poem_text}"
+    if interpretation:
+        body += f"\n\n💬 **تفسیر:**\n{interpretation}"
+    await event.edit(body)
