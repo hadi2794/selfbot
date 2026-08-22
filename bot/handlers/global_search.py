@@ -51,6 +51,44 @@ def _peer_title(peer, chats_map: dict, users_map: dict) -> str:
     return "نامشخص"
 
 
+def _message_link(chat_id: int, message_id: int, username: str = None) -> str:
+    """
+    لینکِ یک پیامِ مشخص می‌سازه تا با زدن روش، دقیقاً همون پیام باز بشه:
+    - اگه چت/کانال یوزرنیم داشته باشه: https://t.me/<username>/<msg_id>
+    - سوپرگروه/کانالِ خصوصی (chat_id با -100 شروع می‌شه): https://t.me/c/<id>/<msg_id>
+    - گروهِ ساده یا چتِ خصوصی (بدون یوزرنیم): tg://openmessage?...
+      (این‌ها فقط توی اپ/دسکتاپِ تلگرام باز می‌شن، نه توی مرورگر)
+    """
+    if username:
+        return f"https://t.me/{username}/{message_id}"
+    s = str(chat_id)
+    if s.startswith("-100"):
+        return f"https://t.me/c/{s[4:]}/{message_id}"
+    if chat_id < 0:
+        return f"tg://openmessage?chat_id={abs(chat_id)}&message_id={message_id}"
+    return f"tg://openmessage?user_id={chat_id}&message_id={message_id}"
+
+
+def _peer_to_chat_id(peer) -> "int | None":
+    """پیوندِ Peer تلگرام (User/Chat/Channel) رو به یه chat_id قابل‌استفاده برای
+    _message_link تبدیل می‌کنه (همون قراردادِ chat_id منفی/مثبتِ تلگرام)."""
+    if isinstance(peer, PeerUser):
+        return peer.user_id
+    if isinstance(peer, PeerChat):
+        return -peer.chat_id
+    if isinstance(peer, PeerChannel):
+        return int(f"-100{peer.channel_id}")
+    return None
+
+
+def _fmt_item(text: str, link: str = None) -> str:
+    """اگه لینک داشته باشیم، متن رو به یه لینکِ قابل‌کلیک تبدیل می‌کنه که با
+    زدن روش دقیقاً همون پیام/چت باز می‌شه؛ وگرنه متنِ ساده برمی‌گرده."""
+    if link:
+        return f"[{text}]({link})"
+    return text
+
+
 async def _search_local(query: str) -> Dict[str, List[str]]:
     """جستجو توی داده‌های داخلیِ ربات (دیتابیسِ خودش)."""
     results: Dict[str, List[str]] = {}
@@ -58,7 +96,7 @@ async def _search_local(query: str) -> Dict[str, List[str]]:
     try:
         notes = await notes_repo.search_notes(query)
         if notes:
-            results["یادداشت‌ها"] = [f"`{n.key}`: {n.text[:80]}..." for n in notes[:5]]
+            results["یادداشت‌ها"] = [f"`{n.key}`: {n.text[:80]}..." for n in notes]
     except Exception:
         logger.exception("خطا در جستجوی یادداشت‌ها")
 
@@ -67,29 +105,35 @@ async def _search_local(query: str) -> Dict[str, List[str]]:
         if memories:
             items = []
             for cat, mems in memories.items():
-                for m in mems[:3]:
+                for m in mems:
                     items.append(f"[{cat}] `{m.key}`: {m.value[:80]}...")
             if items:
-                results["حافظه AI"] = items[:10]
+                results["حافظه AI"] = items
     except Exception:
         logger.exception("خطا در جستجوی حافظه‌ی AI")
 
     try:
         profiles = await user_profile_repo.search_profiles(query)
         if profiles:
-            results["کاربران"] = [
-                f"@{p.username or p.first_name or str(p.user_id)}: {p.tags or 'بدون برچسب'}"
-                for p in profiles[:5]
-            ]
+            items = []
+            for p in profiles:
+                label = f"@{p.username or p.first_name or str(p.user_id)}: {p.tags or 'بدون برچسب'}"
+                # لینکِ باز شدنِ همون چتِ خصوصی با این کاربر
+                link = f"https://t.me/{p.username}" if p.username else f"tg://user?id={p.user_id}"
+                items.append(_fmt_item(label, link))
+            results["کاربران"] = items
     except Exception:
         logger.exception("خطا در جستجوی پروفایل‌ها")
 
     try:
         inbox_items = await inbox_repo.search_items(query)
         if inbox_items:
-            results["صندوق ورودی"] = [
-                f"{i.sender_name or 'ناشناس'}: {i.text[:60]}..." for i in inbox_items[:5]
-            ]
+            items = []
+            for i in inbox_items:
+                label = f"{i.sender_name or 'ناشناس'}: {i.text[:60]}..."
+                link = _message_link(i.chat_id, i.message_id)
+                items.append(_fmt_item(label, link))
+            results["صندوق ورودی"] = items
     except Exception:
         logger.exception("خطا در جستجوی صندوق ورودی")
 
@@ -98,7 +142,7 @@ async def _search_local(query: str) -> Dict[str, List[str]]:
         if jobs:
             results["زمان‌بندی"] = [
                 f"#{j.id} {j.text[:40]}... ({j.run_at.strftime('%Y-%m-%d %H:%M')})"
-                for j in jobs[:5]
+                for j in jobs
             ]
     except Exception:
         logger.exception("خطا در جستجوی کارهای زمان‌بندی‌شده")
@@ -107,14 +151,14 @@ async def _search_local(query: str) -> Dict[str, List[str]]:
         settings = await settings_repo.get_all_settings()
         matched = {k: v for k, v in settings.items() if query.lower() in k.lower() or query.lower() in str(v).lower()}
         if matched:
-            results["تنظیمات"] = [f"`{k}`: {str(v)[:40]}..." for k, v in list(matched.items())[:5]]
+            results["تنظیمات"] = [f"`{k}`: {str(v)[:40]}..." for k, v in matched.items()]
     except Exception:
         logger.exception("خطا در جستجوی تنظیمات")
 
     return results
 
 
-async def _search_telegram_messages(query: str, limit: int = 8) -> List[str]:
+async def _search_telegram_messages(query: str, limit: int = 20) -> List[str]:
     """
     جستجوی پیام توی همه‌ی چت‌هایی که خودت عضوشونی (SearchGlobalRequest -
     همون چیزی که نوارِ جستجویِ خودِ اپ تلگرام هم استفاده می‌کنه). چون فقط
@@ -152,11 +196,25 @@ async def _search_telegram_messages(query: str, limit: int = 8) -> List[str]:
             continue
         peer = getattr(m, "peer_id", None)
         chat_title = _peer_title(peer, chats_map, users_map) if peer else "نامشخص"
-        items.append(f"«{chat_title}»: {text[:80]}...")
+
+        link = None
+        chat_id = _peer_to_chat_id(peer) if peer else None
+        message_id = getattr(m, "id", None)
+        if chat_id is not None and message_id is not None:
+            username = None
+            if isinstance(peer, PeerChannel):
+                c = chats_map.get(peer.channel_id)
+                username = getattr(c, "username", None)
+            elif isinstance(peer, PeerUser):
+                u = users_map.get(peer.user_id)
+                username = getattr(u, "username", None)
+            link = _message_link(chat_id, message_id, username)
+
+        items.append(_fmt_item(f"«{chat_title}»: {text[:80]}...", link))
     return items
 
 
-async def _search_telegram_entities(query: str, limit: int = 8) -> List[str]:
+async def _search_telegram_entities(query: str, limit: int = 20) -> List[str]:
     """
     جستجوی کانال/گروه/کاربر توی دایرکتوریِ عمومیِ کلِ تلگرام (contacts.SearchRequest -
     همون چیزی که وقتی توی جستجوی تلگرام یه اسم می‌زنی و نتایجِ «Global search»
@@ -175,14 +233,18 @@ async def _search_telegram_entities(query: str, limit: int = 8) -> List[str]:
     items = []
     for chat in getattr(result, "chats", []) or []:
         kind = "📢 کانال" if getattr(chat, "broadcast", False) else "👥 گروه"
-        username = f" (@{chat.username})" if getattr(chat, "username", None) else ""
-        items.append(f"{kind} **{chat.title}**{username}")
+        uname = getattr(chat, "username", None)
+        username = f" (@{uname})" if uname else ""
+        link = f"https://t.me/{uname}" if uname else None
+        items.append(_fmt_item(f"{kind} **{chat.title}**{username}", link))
     for user in getattr(result, "users", []) or []:
         if getattr(user, "bot", False):
             continue
         name = " ".join(filter(None, [user.first_name, user.last_name])) or str(user.id)
-        username = f" (@{user.username})" if getattr(user, "username", None) else ""
-        items.append(f"👤 **{name}**{username}")
+        uname = getattr(user, "username", None)
+        username = f" (@{uname})" if uname else ""
+        link = f"https://t.me/{uname}" if uname else f"tg://user?id={user.id}"
+        items.append(_fmt_item(f"👤 **{name}**{username}", link))
     return items[:limit]
 
 
@@ -247,10 +309,8 @@ async def global_search_handler(event):
     total = 0
     for section, items in results.items():
         body_lines.append(f"📁 **{section}** ({len(items)})")
-        for item in items[:5]:
+        for item in items:
             body_lines.append(f"  • {item}")
-        if len(items) > 5:
-            body_lines.append(f"  ... و {len(items) - 5} مورد دیگر")
         body_lines.append("")
         total += len(items)
     body_lines.append(f"📊 مجموع: {total} نتیجه")
