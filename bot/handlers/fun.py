@@ -578,6 +578,47 @@ async def quiz_handler(event):
 # فال حافظ — با کتابخانه‌ی محلیِ `hafez` (دیتای گنجور، بدون نیاز به شبکه/کلید)
 # ---------------------------------------------------------------------------
 
+async def _pip_install(package: str, timeout: int = 90):
+    """
+    نصبِ یه پکیج با pip در پس‌زمینه (بدون بلاک‌کردنِ کلِ ربات، چون توی
+    subprocess جداست، نه توی همون event loop). اگه به مسیرِ نصبِ اصلی دسترسیِ
+    نوشتن نباشه (فایل‌سیستمِ read-only یا کاربرِ غیرِ root)، خودکار با
+    `--user` هم امتحان می‌کنه. یه (ok: bool, output: str) برمی‌گردونه.
+    """
+    async def _run(*extra_args):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "pip", "install", "--upgrade", *extra_args, package,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            return proc.returncode == 0, (out or b"").decode(errors="ignore")
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return False, f"نصب بعدِ {timeout} ثانیه هنگ کرد (احتمالاً سرور به اینترنت/pypi.org دسترسی نداره)"
+        except Exception as e:
+            return False, str(e)
+
+    ok, out = await _run()
+    if ok:
+        return True, out
+    # اگه به‌خاطرِ عدمِ دسترسیِ نوشتن شکست خورده، با --user دوباره امتحان کن
+    if "Permission denied" in out or "Errno 13" in out or "read-only" in out.lower():
+        ok2, out2 = await _run("--user")
+        if ok2:
+            import site
+            user_site = site.getusersitepackages()
+            if user_site not in sys.path:
+                sys.path.insert(0, user_site)
+            return True, out2
+        return False, out + "\n---\n" + out2
+    return False, out
+
+
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["فال", "hafez"], arg=False)))
 async def hafez_fal_handler(event):
     """
@@ -593,24 +634,21 @@ async def hafez_fal_handler(event):
         import hafez
     except ImportError:
         await event.edit("⏳ کتابخانه‌ی فال نصب نیست، دارم نصبش می‌کنم...")
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "pip", "install", "--upgrade", "hafez",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            out, _ = await proc.communicate()
-            if proc.returncode != 0:
-                raise RuntimeError((out or b"").decode(errors="ignore")[-500:])
-        except Exception as e:
+        ok, err = await _pip_install("hafez")
+        if not ok:
             _record_error()
-            logger.exception("نصبِ خودکارِ hafez شکست خورد")
+            logger.error("نصبِ خودکارِ hafez شکست خورد: %s", err)
             return await event.edit(
-                "❌ نصبِ خودکار جواب نداد. توی سرور دستی امتحان کن:\n"
+                "❌ نصبِ خودکار جواب نداد. محتمل‌ترین دلیل‌ها:\n"
+                "• کانتینر/سرویس بعدِ اضافه‌شدنِ `hafez` به requirements.txt "
+                "دوباره **build** نشده (فقط ری‌استارت شده) - روی Railway/Docker "
+                "باید دوباره دیپلوی/بیلد بشه، نه فقط ری‌استارت.\n"
+                "• سرور به pypi.org دسترسیِ اینترنتی نداره.\n"
+                "• دسترسیِ نوشتن روی مسیرِ نصبِ پکیج‌ها نیست (فایل‌سیستمِ read-only).\n\n"
+                "دستیِ جایگزین (توی ترمینالِ سرور):\n"
                 f"`{sys.executable} -m pip install hafez`\n\n"
-                f"خطا: `{str(e)[:300]}`"
+                f"خروجیِ خطا: `{err[:400]}`"
             )
-
         importlib.invalidate_caches()
         try:
             import hafez
