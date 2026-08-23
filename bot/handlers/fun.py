@@ -2,8 +2,11 @@
 / guess / slot / 8ball / love / wyr / quiz / fal"""
 import asyncio
 import hashlib
+import importlib
+import logging
 import random
 import re
+import sys
 import urllib.parse
 
 import aiohttp
@@ -15,6 +18,8 @@ from ..runtime import client, get_http_session
 from ..storage.stats_store import record_error as _record_error
 from ..utils import pat
 from .. import ai
+
+logger = logging.getLogger(__name__)
 
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["تایپ‌زنده", "write"])))
 async def write_handler(event):
@@ -576,19 +581,44 @@ async def quiz_handler(event):
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["فال", "hafez"], arg=False)))
 async def hafez_fal_handler(event):
     """
-    یه فالِ حافظِ تصادفی می‌گیره. برای این کار از پکیجِ `hafez` (روی PyPI)
-    استفاده می‌شه که دیتای غزلیات رو محلی نگه می‌داره (بر اساسِ گنجور) - پس
-    نیازی به اینترنت یا کلیدِ API نداره و همیشه در دسترسه.
+    یه فالِ حافظِ تصادفی می‌گیره. برای این کار از پکیجِ `hafez` (روی PyPI،
+    نسخه‌ی 0.4.2 به بعد، https://pypi.org/project/hafez) استفاده می‌شه که
+    دیتای غزلیات رو محلی نگه می‌داره (بر اساسِ گنجور) - پس نیازی به اینترنت
+    یا کلیدِ API نداره و همیشه در دسترسه.
 
-    نصب: `pip install hafez` (توی requirements.txt هم اضافه شده)
+    اگه نصب نباشه، خودش موقعِ اجرا با pip نصبش می‌کنه (نیازی به دخالتِ دستی
+    نیست)؛ فقط بارِ اولی که اجرا می‌شه یه چند ثانیه بیشتر طول می‌کشه.
     """
     try:
         import hafez
     except ImportError:
-        return await event.edit(
-            "⚠️ کتابخانه‌ی `hafez` نصب نیست.\n"
-            "با `pip install hafez` نصبش کن (توی requirements.txt هم هست)."
-        )
+        await event.edit("⏳ کتابخانه‌ی فال نصب نیست، دارم نصبش می‌کنم...")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "pip", "install", "--upgrade", "hafez",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await proc.communicate()
+            if proc.returncode != 0:
+                raise RuntimeError((out or b"").decode(errors="ignore")[-500:])
+        except Exception as e:
+            _record_error()
+            logger.exception("نصبِ خودکارِ hafez شکست خورد")
+            return await event.edit(
+                "❌ نصبِ خودکار جواب نداد. توی سرور دستی امتحان کن:\n"
+                f"`{sys.executable} -m pip install hafez`\n\n"
+                f"خطا: `{str(e)[:300]}`"
+            )
+
+        importlib.invalidate_caches()
+        try:
+            import hafez
+        except ImportError:
+            return await event.edit(
+                "❌ نصب انجام شد ولی هنوز import نمی‌شه. رباتُ یه بار ری‌استارت "
+                "کن (`pip` گاهی توی محیطِ ویرچوال یا اجازه‌ی نوشتنِ متفاوتی داره)."
+            )
 
     try:
         result = await asyncio.to_thread(hafez.omen)
