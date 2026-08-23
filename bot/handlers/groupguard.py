@@ -177,7 +177,11 @@ async def _classify_image(raw: bytes) -> str:
             ],
         },
     ]
-    return await ai.ask_ai(messages, max_tokens=5)
+    # max_tokens قبلاً ۵ بود؛ روی بعضی سرویس‌ها/مدل‌ها (مخصوصاً مدل‌های
+    # reasoning که یه بخشی از توکن‌های همون max_tokens صرفِ «فکرکردنِ» داخلی
+    # می‌شه، قبل از نوشتنِ جوابِ نهایی) این عدد اونقدر کمه که مدل هیچ توکنِ
+    # قابل‌نمایشی جا نمی‌کنه و پاسخ خالی برمی‌گرده - نه خطا، فقط content خالی.
+    return await ai.ask_ai(messages, max_tokens=20)
 
 
 async def _is_nsfw_image(raw: bytes) -> bool:
@@ -199,7 +203,17 @@ async def _is_nsfw_image(raw: bytes) -> bool:
     except (ai.AIDisabledError, ai.AIRequestError) as e:
         logger.warning("فیلترِ پورن: سرویسِ AI خطا داد - fail-open. جزئیات: %s", e)
         return False
-    return "NSFW" in answer.upper()
+    normalized = answer.upper()
+    if "NSFW" not in normalized and "SAFE" not in normalized:
+        # نه خطا داد، نه یکی از دو کلمه‌ی موردِ انتظار رو برگردوند (مثلاً
+        # پاسخِ خالی) - این هم یه‌جور fail-openه که با try/except بالا گرفته
+        # نمی‌شه، پس جدا لاگ می‌کنیم تا از نگاه‌نکردنِ خاموشِ فیلتر بی‌خبر نمونی.
+        logger.warning(
+            "فیلترِ پورن: پاسخِ مدل نه NSFW بود نه SAFE (احتمالاً خالی) - fail-open. پاسخِ خام: %r",
+            answer,
+        )
+        return False
+    return "NSFW" in normalized
 
 
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["فیلترپورن", "pornfilter"])))
@@ -238,6 +252,18 @@ async def pornfilter_cmd_handler(event):
         reply = await event.get_reply_message()
         if not reply or not reply.photo:
             return await event.edit("پیامِ ریپلای‌شده باید یه عکسِ معمولی باشه (نه ویدیو/GIF/استیکر/فایل)")
+        file_size = getattr(reply.file, "size", None) or 0
+        if file_size and file_size > config.GROUP_PORN_FILTER_MAX_BYTES:
+            return await event.edit(
+                f"⚠️ حجمِ این عکس ({file_size / (1024 * 1024):.1f} مگابایت) از سقفِ "
+                f"`GROUP_PORN_FILTER_MAX_BYTES` (`{config.GROUP_PORN_FILTER_MAX_BYTES / (1024 * 1024):.0f}` "
+                "مگابایت) بیشتره.\n\n"
+                "فیلترِ خودکار چنین عکسی رو اصلاً به AI نمی‌فرسته و بدونِ هیچ چکی رد می‌کنه - "
+                "برای همینه که همین دستورِ تست هم اینجا متوقف شد (تا دقیقاً هماهنگ با رفتارِ واقعیِ "
+                "فیلتر باشه). اگه عکسِ فرستاده‌شده (بدون فوروارد/ریپلای) با کیفیتِ بالاتری از سمتِ "
+                "تلگرام فشرده شده باشه، ممکنه دقیقاً همین باشه: نسخه‌ی فورواردی/اصلی کوچیک‌تر از سقف "
+                "بوده، نسخه‌ی تازه‌فرستاده‌شده بزرگ‌تر."
+            )
         if not config.AI_API_KEY:
             return await event.edit(
                 "⚠️ AI_API_KEY تنظیم نشده - اول این متغیر رو ست کن و دوباره امتحان کن."
@@ -261,6 +287,23 @@ async def pornfilter_cmd_handler(event):
                 "نه این‌که خودِ فیلتر خاموش یا خراب باشه. معمولاً یعنی: AI_API_BASE با آدرسِ واقعیِ "
                 "سرویسِ متصل‌شده هم‌خونی نداره، مدلِ ست‌شده (AI_MODEL) از ورودیِ تصویر (Vision) "
                 "پشتیبانی نمی‌کنه، یا کلید/سرویس اصلاً به این نوعِ درخواست جواب نمی‌ده."
+            )
+        if "NSFW" not in answer.upper() and "SAFE" not in answer.upper():
+            return await event.edit(
+                "⚠️ **درخواست بدونِ خطا موفق بود، ولی مدل نه NSFW نوشت نه SAFE** "
+                f"(پاسخِ خام: `{answer or '(خالی)'}`).\n\n"
+                "فیلترِ خودکار همچین پاسخی رو هم فیل‌اوپن می‌کنه (یعنی این عکس حذف نمی‌شه) - "
+                "برای همینه که به‌نظر می‌رسه فیلتر «کار نمی‌کنه»، درحالی‌که واقعاً داره درخواست می‌زنه.\n\n"
+                "محتمل‌ترین دلیل: خودِ سرویس/مدلِ متصل‌شده (نه کدِ این پروژه) از تحلیل/توصیفِ "
+                "تصاویرِ صریحِ جنسی امتناع می‌کنه و به‌جایِ نوشتنِ NSFW، یه پاسخِ خالی/فیلترشده "
+                "برمی‌گردونه - این رفتار روی بیشترِ سرویس‌های عمومیِ چت‌تکمیل (نه فقط این یکی) "
+                "برای این نوع تصاویر رایجه.\n\n"
+                f"برای مطمئن‌شدن: همین `{PREFIX}فیلترپورن تست` رو یه‌بار روی یه عکسِ کاملاً "
+                "معمولی/سالم (مثلاً یه عکسِ غذا یا منظره) امتحان کن:\n"
+                "• اگه اونجا واضح `SAFE` نوشت → یعنی مشکل مخصوصِ تصاویرِ صریحه (به‌احتمالِ زیاد "
+                "امتناعِ خودِ مدل)، نه یه مشکلِ کلیِ اتصال.\n"
+                "• اگه اونجا هم پاسخِ خالی/نامشخص گرفتی → مشکل کلی‌تره (مثلاً محدودیتِ سرویس روی "
+                "ورودیِ تصویر به‌طورِ کلی)."
             )
         return await event.edit(f"✅ پاسخِ خامِ مدل برای این عکس: `{answer}`")
 
