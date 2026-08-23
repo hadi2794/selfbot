@@ -39,10 +39,17 @@ def _read_all_poems() -> list[dict]:
     try:
         import hafez
     except ImportError:
+        import traceback
+
         print(
-            "❌ پکیجِ `hafez` نصب نیست. اول این رو بزن:\n"
-            "    pip install hafez\n"
-            "(این پکیج فقط برای همین اسکریپتِ seed لازمه، نه برای خودِ ربات.)",
+            "❌ importِ پکیجِ `hafez` fail شد. جزئیاتِ کاملِ خطا:\n",
+            file=sys.stderr,
+        )
+        traceback.print_exc()
+        print(
+            "\n(اگه این traceback می‌گه 'No module named hafez' یعنی واقعاً نصب "
+            "نیست: pip install hafez\n"
+            "اگه چیزِ دیگه‌ای می‌گه، مشکل از داخلِ خودِ پکیجه، نه از نصب‌نبودنش.)",
             file=sys.stderr,
         )
         sys.exit(1)
