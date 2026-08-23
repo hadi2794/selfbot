@@ -89,3 +89,20 @@ AI_TTS_TIMEOUT = int(os.getenv("AI_TTS_TIMEOUT", "60"))
 # نیاز به AI_API_KEY ندارن. اگه می‌خوای زبان/صدا رو عوض کنی:
 STT_LANGUAGE = os.getenv("STT_LANGUAGE", "fa-IR")
 TTS_VOICE = os.getenv("TTS_VOICE", "fa-IR-FaridNeural")
+
+# --- مدیریت گروه پیشرفته: فیلترِ پورن/اسپم (.فیلترپورن / .فیلتراسپم) ---
+# فیلترِ پورن از همون سرویسِ هوش‌مصنوعیِ بالا (AI_API_KEY/AI_MODEL) برای
+# تحلیلِ تصویر استفاده می‌کنه - پس AI_MODEL باید از ورودیِ تصویر (Vision)
+# پشتیبانی کنه (پیش‌فرضِ بالا، gpt-4o-mini، این قابلیت رو داره). اگه
+# AI_API_KEY ست نباشه یا مدل تصویر رو پشتیبانی نکنه، فیلترِ پورن fail-open
+# می‌کنه (یعنی به‌جای حذفِ اشتباهیِ عکس‌های سالم، کاری نمی‌کنه).
+GROUP_PORN_FILTER_MAX_BYTES = int(
+    os.getenv("GROUP_PORN_FILTER_MAX_BYTES", str(8 * 1024 * 1024))
+)  # عکس‌های بزرگ‌تر از این چک نمی‌شن (برای جلوگیری از دانلودهای سنگین/کند)
+
+# فیلترِ اسپم کاملاً محلیه (بدونِ نیاز به AI): تشخیصِ فلادِ پیام (تعداد زیاد
+# توی یه بازه‌ی کوتاه) و تکرارِ عینِ یه متن از طرفِ یک نفر.
+GROUP_SPAM_WINDOW_SECONDS = int(os.getenv("GROUP_SPAM_WINDOW_SECONDS", "10"))
+GROUP_SPAM_MAX_MESSAGES = int(os.getenv("GROUP_SPAM_MAX_MESSAGES", "6"))
+GROUP_SPAM_DUPLICATE_THRESHOLD = int(os.getenv("GROUP_SPAM_DUPLICATE_THRESHOLD", "3"))
+GROUP_SPAM_WARN_COOLDOWN_SECONDS = int(os.getenv("GROUP_SPAM_WARN_COOLDOWN_SECONDS", "20"))

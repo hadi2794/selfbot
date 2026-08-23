@@ -183,9 +183,10 @@ class StatsChatCount(Base):
 class GroupGuardSettings(Base):
     """
     تنظیماتِ «مدیریت گروه پیشرفته» به‌ازای هر گروه: فیلترلینک (حذف خودکار
-    پیام‌های حاویِ لینک از غیرادمین‌ها) و خوش‌آمدگویی (پیام خودکار برای عضو
-    جدید). هر دو ویژگی روی یک ردیف/گروه (chat_id) نگه داشته می‌شن چون هر دو
-    «تنظیماتِ همون گروه» هستن، نه رکوردهای مستقل.
+    پیام‌های حاویِ لینک از غیرادمین‌ها)، خوش‌آمدگویی (پیام خودکار برای عضو
+    جدید)، فیلترِ پورن (تحلیلِ تصویر با AI) و فیلترِ اسپم (فلاد/تکرارِ پیام).
+    همه‌شون روی یک ردیف/گروه (chat_id) نگه داشته می‌شن چون همه «تنظیماتِ
+    همون گروه» هستن، نه رکوردهای مستقل.
     """
 
     __tablename__ = "group_guard_settings"
@@ -194,6 +195,8 @@ class GroupGuardSettings(Base):
     link_filter_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     welcome_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     welcome_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    porn_filter_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    spam_filter_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
     )
