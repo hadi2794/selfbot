@@ -154,17 +154,17 @@ _PORN_FILTER_SYSTEM = (
 )
 
 
-async def _classify_image(raw: bytes) -> str:
+async def _classify_image(raw: bytes, *, return_raw: bool = False):
     """
     تصویر رو با همون سرویسِ AI که `.پرسش`/`.منشی` هم ازش استفاده می‌کنن تحلیل
-    می‌کنه (پس AI_MODEL باید Vision داشته باشه - پیش‌فرضِ پروژه gpt-4o-mini
-    این قابلیت رو داره) و پاسخِ خامِ مدل رو برمی‌گردونه ("NSFW"/"SAFE"، طبقِ
-    پرامپتِ سیستم).
+    می‌کنه (پس AI_MODEL باید Vision داشته باشه) و پاسخِ مدل رو برمی‌گردونه.
+    خطا رو قورت نمی‌ده - AIDisabledError/AIRequestError مستقیم بالا می‌ره؛
+    fail-openِ فیلترِ خودکار توی _is_nsfw_image مدیریت می‌شه، نه اینجا.
 
-    برخلافِ _is_nsfw_image، این تابع خطا رو قورت نمی‌ده - AIDisabledError/
-    AIRequestError رو مستقیم بالا می‌فرسته. هم فیلترِ خودکار (که fail-open
-    لازم داره، پایین‌تر) و هم دستورِ تستیِ `.فیلترپورن تست` (که خطای واقعی رو
-    به کاربر نشون می‌ده) از همین یه تابعِ مشترک استفاده می‌کنن.
+    return_raw=True یعنی به‌جای فقط متنِ content (str)، کلِ دیکشنریِ JSONِ
+    پاسخ برگردونده بشه - فقط دستورِ تستیِ `.فیلترپورن تست` از این استفاده
+    می‌کنه تا finish_reason رو هم نشون بده (برای فهمیدنِ این‌که پاسخِ خالی
+    یعنی چی: قطع‌شده به‌خاطرِ توکن؟ فیلترِ محتوای خودِ سرویس؟ یا یه stopِ عادی؟).
     """
     b64 = base64.b64encode(raw).decode("ascii")
     messages = [
@@ -177,11 +177,13 @@ async def _classify_image(raw: bytes) -> str:
             ],
         },
     ]
-    # max_tokens قبلاً ۵ بود؛ روی بعضی سرویس‌ها/مدل‌ها (مخصوصاً مدل‌های
-    # reasoning که یه بخشی از توکن‌های همون max_tokens صرفِ «فکرکردنِ» داخلی
-    # می‌شه، قبل از نوشتنِ جوابِ نهایی) این عدد اونقدر کمه که مدل هیچ توکنِ
-    # قابل‌نمایشی جا نمی‌کنه و پاسخ خالی برمی‌گرده - نه خطا، فقط content خالی.
-    return await ai.ask_ai(messages, max_tokens=20)
+    # max_tokens: ۵ -> ۲۰ فایده نکرد (هم عکسِ پورن هم عکسِ غذا پاسخِ خالی
+    # دادن) - یعنی این احتمالاً «کمبودِ توکن برای مدلِ reasoning» نیست (اگه
+    # بود، محدودیت باید به مدلِ عکسِ ساده کمتر برمی‌خورد)، ولی برای رد/تأییدِ
+    # قطعیِ همین فرضیه، به‌طورِ آزمایشی خیلی بالاتر بردیمش. اگه بازم خالی
+    # موند، مشکل ربطی به max_tokens نداره - probably خودِ سرویس/مدل ورودیِ
+    # تصویر رو اصلاً پردازش نمی‌کنه.
+    return await ai.ask_ai(messages, max_tokens=300, return_raw=return_raw)
 
 
 async def _is_nsfw_image(raw: bytes) -> bool:
@@ -199,18 +201,25 @@ async def _is_nsfw_image(raw: bytes) -> bool:
     مستقیم توی چت (بدونِ نیاز به لاگ‌های Railway) از `.فیلترپورن تست` استفاده کن.
     """
     try:
-        answer = await _classify_image(raw)
+        raw_response = await _classify_image(raw, return_raw=True)
     except (ai.AIDisabledError, ai.AIRequestError) as e:
         logger.warning("فیلترِ پورن: سرویسِ AI خطا داد - fail-open. جزئیات: %s", e)
         return False
+    choice = {}
+    if isinstance(raw_response, dict):
+        choices = raw_response.get("choices") or [{}]
+        choice = choices[0] if choices else {}
+    answer = ((choice.get("message") or {}).get("content") or "").strip()
     normalized = answer.upper()
     if "NSFW" not in normalized and "SAFE" not in normalized:
         # نه خطا داد، نه یکی از دو کلمه‌ی موردِ انتظار رو برگردوند (مثلاً
         # پاسخِ خالی) - این هم یه‌جور fail-openه که با try/except بالا گرفته
         # نمی‌شه، پس جدا لاگ می‌کنیم تا از نگاه‌نکردنِ خاموشِ فیلتر بی‌خبر نمونی.
         logger.warning(
-            "فیلترِ پورن: پاسخِ مدل نه NSFW بود نه SAFE (احتمالاً خالی) - fail-open. پاسخِ خام: %r",
+            "فیلترِ پورن: پاسخِ مدل نه NSFW بود نه SAFE (احتمالاً خالی) - fail-open. "
+            "پاسخِ خام: %r finish_reason: %r",
             answer,
+            choice.get("finish_reason"),
         )
         return False
     return "NSFW" in normalized
@@ -276,7 +285,7 @@ async def pornfilter_cmd_handler(event):
         if not raw:
             return await event.edit("❌ دانلودِ عکس چیزی برنگردوند")
         try:
-            answer = await _classify_image(raw)
+            raw_response = await _classify_image(raw, return_raw=True)
         except ai.AIDisabledError:
             return await event.edit("⚠️ AI_API_KEY تنظیم نشده")
         except ai.AIRequestError as e:
@@ -288,24 +297,44 @@ async def pornfilter_cmd_handler(event):
                 "سرویسِ متصل‌شده هم‌خونی نداره، مدلِ ست‌شده (AI_MODEL) از ورودیِ تصویر (Vision) "
                 "پشتیبانی نمی‌کنه، یا کلید/سرویس اصلاً به این نوعِ درخواست جواب نمی‌ده."
             )
+        choice = {}
+        if isinstance(raw_response, dict):
+            choices = raw_response.get("choices") or [{}]
+            choice = choices[0] if choices else {}
+        answer = ((choice.get("message") or {}).get("content") or "").strip()
+        finish_reason = choice.get("finish_reason")
+
         if "NSFW" not in answer.upper() and "SAFE" not in answer.upper():
-            return await event.edit(
-                "⚠️ **درخواست بدونِ خطا موفق بود، ولی مدل نه NSFW نوشت نه SAFE** "
-                f"(پاسخِ خام: `{answer or '(خالی)'}`).\n\n"
-                "فیلترِ خودکار همچین پاسخی رو هم فیل‌اوپن می‌کنه (یعنی این عکس حذف نمی‌شه) - "
-                "برای همینه که به‌نظر می‌رسه فیلتر «کار نمی‌کنه»، درحالی‌که واقعاً داره درخواست می‌زنه.\n\n"
-                "محتمل‌ترین دلیل: خودِ سرویس/مدلِ متصل‌شده (نه کدِ این پروژه) از تحلیل/توصیفِ "
-                "تصاویرِ صریحِ جنسی امتناع می‌کنه و به‌جایِ نوشتنِ NSFW، یه پاسخِ خالی/فیلترشده "
-                "برمی‌گردونه - این رفتار روی بیشترِ سرویس‌های عمومیِ چت‌تکمیل (نه فقط این یکی) "
-                "برای این نوع تصاویر رایجه.\n\n"
-                f"برای مطمئن‌شدن: همین `{PREFIX}فیلترپورن تست` رو یه‌بار روی یه عکسِ کاملاً "
-                "معمولی/سالم (مثلاً یه عکسِ غذا یا منظره) امتحان کن:\n"
-                "• اگه اونجا واضح `SAFE` نوشت → یعنی مشکل مخصوصِ تصاویرِ صریحه (به‌احتمالِ زیاد "
-                "امتناعِ خودِ مدل)، نه یه مشکلِ کلیِ اتصال.\n"
-                "• اگه اونجا هم پاسخِ خالی/نامشخص گرفتی → مشکل کلی‌تره (مثلاً محدودیتِ سرویس روی "
-                "ورودیِ تصویر به‌طورِ کلی)."
+            reason_note = {
+                "length": (
+                    "توکن‌ها تموم شده (`length`) - یعنی حتی با ۳۰۰ توکن هم مدل قبلِ نوشتنِ "
+                    "جوابِ نهایی توکن‌هاش تموم شده؛ معمولاً یعنی یه مدلِ reasoningِ خیلی پرمصرفه "
+                    "که برای این کار مناسب نیست."
+                ),
+                "content_filter": (
+                    "خودِ سرویس/مدل این درخواست رو با فیلترِ محتوای داخلیِ خودش مسدود کرده "
+                    "(`content_filter`) - این محدودیتِ سمتِ سرویسه، نه چیزی که با تنظیماتِ این "
+                    "پروژه قابلِ دورزدن باشه."
+                ),
+                "stop": (
+                    "مدل خودش با `stop` تموم کرده ولی محتوایی ننوشته - نه کمبودِ توکن بوده نه "
+                    "فیلترِ اعلام‌شده. معمولاً یعنی مدل/سرویس اصلاً فرمتِ چندرسانه‌ای (تصویر) رو "
+                    "درست تفسیر نکرده."
+                ),
+            }.get(
+                finish_reason,
+                f"سرویس این `finish_reason` رو اعلام کرده: `{finish_reason}`"
+                if finish_reason
+                else "سرویس اصلاً finish_reason برنگردوند - پاسخِ خامِ کامل رو باید دستی چک کرد.",
             )
-        return await event.edit(f"✅ پاسخِ خامِ مدل برای این عکس: `{answer}`")
+            return await event.edit(
+                "⚠️ **درخواست بدونِ خطای HTTP موفق بود، ولی مدل نه NSFW نوشت نه SAFE** "
+                f"(پاسخِ خام: `{answer or '(خالی)'}`)\n"
+                f"**دلیل:** {reason_note}\n\n"
+                "فیلترِ خودکار همچین پاسخی رو هم fail-open می‌کنه (این عکس حذف نمی‌شه) - برای همینه "
+                "که به‌نظر می‌رسه فیلتر «کار نمی‌کنه»، درحالی‌که واقعاً داره درخواست می‌زنه."
+            )
+        return await event.edit(f"✅ پاسخِ خامِ مدل برای این عکس: `{answer}` (finish_reason: `{finish_reason}`)")
 
     status = "روشن ✅" if is_porn_filter_enabled(event.chat_id) else "خاموش ❌"
     ai_status = "آماده ✅" if config.AI_API_KEY else "AI_API_KEY تنظیم نشده ⚠️"

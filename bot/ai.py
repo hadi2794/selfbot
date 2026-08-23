@@ -47,10 +47,14 @@ def _parse_json_body(text: str):
         raise AIRequestError(f"پاسخِ نامعتبر (JSON) از سرویسِ هوش مصنوعی: {e}") from e
 
 
-async def ask_ai(messages: list[dict], *, max_tokens: int | None = None) -> str:
+async def ask_ai(messages: list[dict], *, max_tokens: int | None = None, return_raw: bool = False):
     """
     messages: لیستِ استانداردِ OpenAI chat messages (هرکدوم {"role": ..., "content": ...}).
-    خروجی: متنِ پاسخِ مدل (str).
+    خروجی: متنِ پاسخِ مدل (str) - مگر این‌که return_raw=True باشه، که کلِ
+    دیکشنریِ JSONِ پاسخ (خام) برگردونده می‌شه. این برای مواقعیه که فقط متنِ
+    content کافی نیست و لازمه finish_reason هم دیده بشه (مثلاً برای
+    عیب‌یابیِ این‌که چرا content خالی برگشته: تمومِ max_tokens شده؟ فیلترِ
+    محتوای خودِ سرویس زده؟ یا واقعاً یه پاسخِ عادیِ خالیه؟).
     """
     if not config.AI_API_KEY:
         raise AIDisabledError(
@@ -84,6 +88,9 @@ async def ask_ai(messages: list[dict], *, max_tokens: int | None = None) -> str:
         raise
     except Exception as e:
         raise AIRequestError(str(e)) from e
+
+    if return_raw:
+        return data
 
     try:
         return (data["choices"][0]["message"]["content"] or "").strip()
