@@ -15,6 +15,18 @@ from . import audio
 
 logger = logging.getLogger("selfbot.handlers.assistant")
 
+# آخرین باری که یه پیامِ خروجیِ واقعی (از هر دستگاهی، نه فقط همین اسکریپت)
+# دیده شده - برای تشخیصِ آنیِ «الان پشتِ اکانتم»، به‌جای صبر کردن تا چکِ
+# دوره‌ایِ assistant_status_watcher (که هر ASSISTANT_CHECK_INTERVAL ثانیه
+# اجرا می‌شه و به date_active سمتِ سرورِ تلگرام هم متکیه که همیشه آنی
+# آپدیت نمی‌شه).
+_last_self_activity = datetime.min.replace(tzinfo=timezone.utc)
+
+# (chat_id, message_id) پیام‌هایی که خودِ منشی به‌عنوانِ auto-reply فرستاده -
+# این‌ها نباید به‌عنوانِ «فعالیتِ خودِ کاربر» حساب بشن، وگرنه منشی با هر
+# جوابی که خودش می‌ده، خودش رو «آنلاین» تشخیص می‌داد و بلافاصله خاموش می‌شد.
+_auto_sent_keys: set[tuple[int, int]] = set()
+
 _ASSISTANT_MODE_FA = {
     "auto": "خودکار (همه‌جا)",
     "mention": "فقط با منشن/ریپلای",
@@ -254,10 +266,39 @@ async def assistant_autoreply(event):
 
         if not reply_text:
             return  # نه متنِ ثابتی هست، نه AI جواب داد
-        await event.reply(reply_text)
+        sent = await event.reply(reply_text)
+        if sent is not None:
+            # این پیام رو مارک می‌کنیم که هندلرِ تشخیصِ فعالیت (پایینِ همین
+            # فایل) اشتباهی به‌عنوانِ «کاربر خودش پیام فرستاد» حسابش نکنه.
+            _auto_sent_keys.add((event.chat_id, sent.id))
     except Exception:
         _record_error()
         logger.exception("خطا در پاسخ خودکار منشی")
+
+
+@client.on(events.NewMessage(outgoing=True))
+async def assistant_self_activity_watcher(event):
+    """
+    هر پیامِ خروجیِ واقعی (چه یه دستورِ .منشی، چه یه پیامِ معمولی به یه نفر -
+    از هر کدوم از دستگاه‌هات، چون تلگرام پیام‌های خروجیِ خودت رو بینِ همه‌ی
+    سشن‌هات sync می‌کنه) رو به‌عنوانِ «الان پشتِ اکانتم» در نظر می‌گیره.
+
+    برخلافِ assistant_status_watcher که هر چند ثانیه یک‌بار poll می‌کنه و به
+    date_active سمتِ سرورِ تلگرام متکیه (که همیشه آنیِ‌آنی آپدیت نمی‌شه)، این
+    هندلر همون لحظه‌ی ارسالِ پیام صدا زده می‌شه - پس اگه تشخیصِ خودکار روشن
+    باشه، بدونِ هیچ تأخیری منشی رو خاموش می‌کنه.
+    """
+    global _last_self_activity
+
+    key = (event.chat_id, event.id)
+    if key in _auto_sent_keys:
+        # این خودِ منشیه که داره auto-reply می‌ده، نه کاربر - نادیده بگیر.
+        _auto_sent_keys.discard(key)
+        return
+
+    _last_self_activity = datetime.now(timezone.utc)
+    if assistant_state["auto_detect"] and assistant_state["enabled"]:
+        assistant_state["enabled"] = False
 
 
 async def assistant_status_watcher():
@@ -266,6 +307,12 @@ async def assistant_status_watcher():
     از تلگرام می‌گیره. اگه سشنی غیر از همین اسکریپت (مثلاً گوشی خودت) به‌تازگی
     فعال بوده باشه، یعنی خودت آنلاینی -> منشی خاموش می‌شه. اگه هیچ سشن دیگه‌ای
     به‌تازگی فعال نبوده -> یعنی آفلاینی -> منشی خودش روشن می‌شه.
+
+    این چک همیشه با سیگنالِ آنیِ assistant_self_activity_watcher ترکیب می‌شه:
+    حتی اگه GetAuthorizationsRequest بگه «آفلاینی» (مثلاً چون date_active
+    سرور هنوز آپدیت نشده)، اگه به‌تازگی خودت یه پیام فرستاده باشی، همچنان
+    آنلاین حساب می‌شی - وگرنه ممکن بود درست همون چند ثانیه‌ای که
+    assistant_self_activity_watcher خاموشش کرده، این تابع دوباره روشنش کنه.
 
     اگه با .assistant on یا .assistant off دستی قفلش کرده باشی (auto_detect
     خاموش)، این تابع اصلاً دست به enabled نمی‌زنه - حتی اگه آفلاین بشی.
@@ -285,6 +332,10 @@ async def assistant_status_watcher():
                 online_elsewhere = seconds_since < config.ASSISTANT_ONLINE_THRESHOLD
             else:
                 online_elsewhere = False  # هیچ سشن دیگه‌ای وصل نیست
+
+            seconds_since_self = (datetime.now(timezone.utc) - _last_self_activity).total_seconds()
+            if seconds_since_self < config.ASSISTANT_ONLINE_THRESHOLD:
+                online_elsewhere = True
 
             new_enabled = not online_elsewhere
             if new_enabled != assistant_state["enabled"]:
