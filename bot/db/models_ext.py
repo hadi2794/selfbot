@@ -176,3 +176,19 @@ class Setting(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+# ------------------------------------------------------------ Hafez Poems ---
+class HafezPoem(Base):
+    """
+    دیوانِ حافظ (برای `.فال`) - یک‌بار با `scripts/seed_hafez.py` پر می‌شه و
+    بعدش هندلر فقط از همین جدول یه ردیفِ رندوم می‌خونه؛ در زمانِ اجرایِ ربات
+    هیچ پکیج/شبکه‌ی اضافه‌ای لازم نیست (برخلافِ نسخه‌ی قبلی که با پکیجِ
+    `hafez` در همون لحظه import می‌شد).
+    """
+
+    __tablename__ = "hafez_poems"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)  # همون poem_id گنجور/hafez
+    poem: Mapped[str] = mapped_column(Text, nullable=False)  # ابیات، هر مصرع در یک خط
+    interpretation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    alt_interpretation: Mapped[str | None] = mapped_column(Text, nullable=True)

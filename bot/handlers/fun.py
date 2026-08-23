@@ -2,11 +2,9 @@
 / guess / slot / 8ball / love / wyr / quiz / fal"""
 import asyncio
 import hashlib
-import importlib
 import logging
 import random
 import re
-import sys
 import urllib.parse
 
 import aiohttp
@@ -15,6 +13,7 @@ from telethon.tl.types import InputMediaDice
 
 from ..config import PREFIX
 from ..runtime import client, get_http_session
+from ..repositories import hafez_repo
 from ..storage.stats_store import record_error as _record_error
 from ..utils import pat
 from .. import ai
@@ -575,102 +574,32 @@ async def quiz_handler(event):
 
 
 # ---------------------------------------------------------------------------
-# فال حافظ — با کتابخانه‌ی محلیِ `hafez` (دیتای گنجور، بدون نیاز به شبکه/کلید)
+# فال حافظ — از PostgreSQL (جدولِ hafez_poems)، نه import در لحظه
 # ---------------------------------------------------------------------------
-
-async def _pip_install(package: str, timeout: int = 90):
-    """
-    نصبِ یه پکیج با pip در پس‌زمینه (بدون بلاک‌کردنِ کلِ ربات، چون توی
-    subprocess جداست، نه توی همون event loop). اگه به مسیرِ نصبِ اصلی دسترسیِ
-    نوشتن نباشه (فایل‌سیستمِ read-only یا کاربرِ غیرِ root)، خودکار با
-    `--user` هم امتحان می‌کنه. یه (ok: bool, output: str) برمی‌گردونه.
-    """
-    async def _run(*extra_args):
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "pip", "install", "--upgrade", *extra_args, package,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            return proc.returncode == 0, (out or b"").decode(errors="ignore")
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            return False, f"نصب بعدِ {timeout} ثانیه هنگ کرد (احتمالاً سرور به اینترنت/pypi.org دسترسی نداره)"
-        except Exception as e:
-            return False, str(e)
-
-    ok, out = await _run()
-    if ok:
-        return True, out
-    # اگه به‌خاطرِ عدمِ دسترسیِ نوشتن شکست خورده، با --user دوباره امتحان کن
-    if "Permission denied" in out or "Errno 13" in out or "read-only" in out.lower():
-        ok2, out2 = await _run("--user")
-        if ok2:
-            import site
-            user_site = site.getusersitepackages()
-            if user_site not in sys.path:
-                sys.path.insert(0, user_site)
-            return True, out2
-        return False, out + "\n---\n" + out2
-    return False, out
-
+# دیتا با `scripts/seed_hafez.py` (یک‌بار، خارج از خودِ ربات) پر می‌شه؛ اینجا
+# فقط یه ردیفِ رندوم می‌خونیم - نه importِ زمانِ‌اجرا، نه pip، نه شبکه.
 
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["فال", "hafez"], arg=False)))
 async def hafez_fal_handler(event):
-    """
-    یه فالِ حافظِ تصادفی می‌گیره. برای این کار از پکیجِ `hafez` (روی PyPI،
-    نسخه‌ی 0.4.2 به بعد، https://pypi.org/project/hafez) استفاده می‌شه که
-    دیتای غزلیات رو محلی نگه می‌داره (بر اساسِ گنجور) - پس نیازی به اینترنت
-    یا کلیدِ API نداره و همیشه در دسترسه.
-
-    اگه نصب نباشه، خودش موقعِ اجرا با pip نصبش می‌کنه (نیازی به دخالتِ دستی
-    نیست)؛ فقط بارِ اولی که اجرا می‌شه یه چند ثانیه بیشتر طول می‌کشه.
-    """
+    """یه فالِ حافظِ تصادفی از جدولِ hafez_poems (PostgreSQL) می‌گیره."""
     try:
-        import hafez
-    except ImportError:
-        await event.edit("⏳ کتابخانه‌ی فال نصب نیست، دارم نصبش می‌کنم...")
-        ok, err = await _pip_install("hafez")
-        if not ok:
-            _record_error()
-            logger.error("نصبِ خودکارِ hafez شکست خورد: %s", err)
-            return await event.edit(
-                "❌ نصبِ خودکار جواب نداد. محتمل‌ترین دلیل‌ها:\n"
-                "• کانتینر/سرویس بعدِ اضافه‌شدنِ `hafez` به requirements.txt "
-                "دوباره **build** نشده (فقط ری‌استارت شده) - روی Railway/Docker "
-                "باید دوباره دیپلوی/بیلد بشه، نه فقط ری‌استارت.\n"
-                "• سرور به pypi.org دسترسیِ اینترنتی نداره.\n"
-                "• دسترسیِ نوشتن روی مسیرِ نصبِ پکیج‌ها نیست (فایل‌سیستمِ read-only).\n\n"
-                "دستیِ جایگزین (توی ترمینالِ سرور):\n"
-                f"`{sys.executable} -m pip install hafez`\n\n"
-                f"خروجیِ خطا: `{err[:400]}`"
-            )
-        importlib.invalidate_caches()
-        try:
-            import hafez
-        except ImportError:
-            return await event.edit(
-                "❌ نصب انجام شد ولی هنوز import نمی‌شه. رباتُ یه بار ری‌استارت "
-                "کن (`pip` گاهی توی محیطِ ویرچوال یا اجازه‌ی نوشتنِ متفاوتی داره)."
-            )
-
-    try:
-        result = await asyncio.to_thread(hafez.omen)
+        row = await hafez_repo.random_poem()
     except Exception:
         _record_error()
-        return await event.edit("❌ خطا در گرفتنِ فال")
+        logger.exception("خطا در خوندنِ فال از دیتابیس")
+        return await event.edit("❌ خطا در ارتباط با دیتابیس")
 
-    verses = result.get("poem") or []
-    if isinstance(verses, str):
-        verses = [v for v in verses.splitlines() if v.strip()]
-    poem_text = "\n".join(verses)
-    interpretation = (result.get("interpretation") or "").strip()
+    if row is None:
+        return await event.edit(
+            "⚠️ جدولِ فال هنوز خالیه. یه‌بار (فقط یه‌بار، نه هر دفعه) از روی "
+            "سرور این رو اجرا کن:\n"
+            "`pip install hafez && python scripts/seed_hafez.py`\n\n"
+            "بعدش `.فال` همیشه مستقیم از دیتابیسِ خودمون جواب می‌ده، بدون "
+            "هیچ نصب/شبکه‌ای."
+        )
 
-    body = f"🔮 **فالِ حافظ**\n\n{poem_text}"
-    if interpretation:
-        body += f"\n\n💬 **تفسیر:**\n{interpretation}"
+    body = f"🔮 **فالِ حافظ**\n\n{row.poem}"
+    if row.interpretation:
+        body += f"\n\n💬 **تفسیر:**\n{row.interpretation}"
     await event.edit(body)
+
