@@ -12,6 +12,7 @@ from . import (
     autopost,
     backup,
     command_router,
+    daily_digest,
     font,
     fun,
     general,

@@ -50,6 +50,7 @@ from bot.plugin_loader import load_all_plugins
 from bot.clock import clock_updater
 from bot.handlers.autopost import autopost_worker
 from bot.handlers.assistant import assistant_status_watcher
+from bot.handlers.daily_digest import daily_digest_worker
 from bot.handlers.scheduler import scheduler_worker
 from bot.handlers.stats import stats_saver
 
@@ -94,6 +95,7 @@ async def main():
     client.loop.create_task(autopost_worker())
     client.loop.create_task(assistant_status_watcher())
     client.loop.create_task(scheduler_worker())
+    client.loop.create_task(daily_digest_worker())
     client.loop.create_task(stats_saver())
     try:
         await client.run_until_disconnected()

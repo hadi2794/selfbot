@@ -202,6 +202,43 @@ class GroupGuardSettings(Base):
     )
 
 
+# ----------------------------------------------------- Daily Digest ---
+class DailyDigestSettings(Base):
+    """
+    تنظیماتِ کلیِ `.خلاصه‌روز` (تک‌ردیفی، id ثابت = 1). هر شب سرِ
+    hour:minute (به‌وقتِ محلی) یه خلاصه از فعالیتِ همون روز به Saved
+    Messages فرستاده می‌شه - یا از «تمامِ چت‌ها» (mode=all) یا فقط از
+    چت‌های انتخابیِ کاربر (mode=custom، توی جدولِ DailyDigestChat).
+
+    last_run_date به‌صورتِ رشته‌ی `YYYY-MM-DD` (بر پایه‌ی زمانِ محلی)
+    ذخیره می‌شه تا اگه پروسه چندبار توی همون دقیقه/بعد از ری‌استارت چک
+    کرد، خلاصه دوبار برای یه روز ارسال نشه.
+    """
+
+    __tablename__ = "daily_digest_settings"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_daily_digest_settings_singleton"),)
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="all")  # all | custom
+    hour: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=23)
+    minute: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    last_run_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class DailyDigestChat(Base):
+    """لیستِ چت/گروه/کانال‌های انتخابی برای حالتِ سفارشیِ `.خلاصه‌روز`."""
+
+    __tablename__ = "daily_digest_chats"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    added_at: Mapped[dt.datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+
 # --------------------------------------------------------- Scheduler ---
 class ScheduledJob(Base):
     """

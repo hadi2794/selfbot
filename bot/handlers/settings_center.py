@@ -19,6 +19,7 @@ from ..config import PREFIX
 from ..runtime import client
 from ..storage.assistant_store import assistant_state, save_assistant
 from ..storage.autopost_store import autopost_state, save_autopost
+from ..storage.daily_digest_store import daily_digest_state, save_daily_digest
 from ..storage.font_store import font_state, save_font_state
 from ..storage.settings_toggles import set_toggle, toggles
 from ..utils import pat
@@ -31,6 +32,7 @@ SETTINGS_KEYS = {
     "ai_mode": "🧠 AI منشی",
     "scheduler_enabled": "⏰ زمان‌بند/یادآوری",
     "autopost_enabled": "🔁 ارسالِ خودکار",
+    "daily_digest_enabled": "🌙 خلاصه‌ی روزانه",
     "font_enabled": "🎨 فونتِ خودکار",
     "stats_enabled": "📊 آمار",
     "notifications_enabled": "🔔 موتورِ اعلان",
@@ -47,6 +49,7 @@ def _live_status() -> dict:
         "ai_mode": assistant_state["ai_mode"],
         "scheduler_enabled": toggles["scheduler_enabled"],
         "autopost_enabled": autopost_state["enabled"],
+        "daily_digest_enabled": daily_digest_state["enabled"],
         "font_enabled": font_state["enabled"],
         "stats_enabled": toggles["stats_enabled"],
         "notifications_enabled": toggles["notifications_enabled"],
@@ -117,6 +120,9 @@ async def _set_setting(event, key: str, value: str):
     elif key == "autopost_enabled":
         autopost_state["enabled"] = enabled
         await save_autopost()
+    elif key == "daily_digest_enabled":
+        daily_digest_state["enabled"] = enabled
+        await save_daily_digest()
     elif key == "font_enabled":
         font_state["enabled"] = enabled
         await save_font_state()

@@ -73,6 +73,16 @@ AI_SUMMARY_MAX_MESSAGES = int(os.getenv("AI_SUMMARY_MAX_MESSAGES", "300"))
 # درون‌حافظه‌ایه (نه دیتابیس) و با ری‌استارتِ پروسه پاک می‌شه.
 ASSISTANT_HISTORY_LIMIT = max(int(os.getenv("ASSISTANT_HISTORY_LIMIT", "10")), 0)
 
+# --- خلاصه‌ی روزانه (`.خلاصه‌روز`) ---
+# ساعت/دقیقه‌ی پیش‌فرضِ ارسالِ خودکارِ خلاصه‌ی هر شب (به‌وقتِ محلی، طبقِ
+# TIMEZONE_OFFSET) - با `.خلاصه‌روز زمان HH:MM` هم از داخلِ ربات قابلِ تغییره.
+DAILY_DIGEST_DEFAULT_HOUR = max(min(int(os.getenv("DAILY_DIGEST_DEFAULT_HOUR", "23")), 23), 0)
+DAILY_DIGEST_DEFAULT_MINUTE = max(min(int(os.getenv("DAILY_DIGEST_DEFAULT_MINUTE", "0")), 59), 0)
+# سقفِ تعدادِ پیام‌های بررسی‌شده به‌ازای هر چت (برای جلوگیری از هزینه/تایم‌اوتِ AI)
+DAILY_DIGEST_MAX_MESSAGES_PER_CHAT = int(os.getenv("DAILY_DIGEST_MAX_MESSAGES_PER_CHAT", "150"))
+# سقفِ تعدادِ چت‌هایی که توی حالتِ «کلی» یک‌جا پردازش می‌شن (برای گروه/کانال/پیویِ زیاد)
+DAILY_DIGEST_MAX_CHATS = int(os.getenv("DAILY_DIGEST_MAX_CHATS", "40"))
+
 # --- صوت و متن (اختیاری: .رونویسی / .متن‌به‌صوت) ---
 # پیش‌فرض: از همون AI_API_KEY/AI_API_BASE بالا استفاده می‌کنن. ولی چون خیلی
 # از سرویس‌های واسط/proxy (مثلاً OpenRouter و مشابه‌ها) endpointهای صوتی
