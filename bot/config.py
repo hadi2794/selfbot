@@ -67,6 +67,12 @@ AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "600"))
 AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "30"))
 AI_SUMMARY_MAX_MESSAGES = int(os.getenv("AI_SUMMARY_MAX_MESSAGES", "300"))
 
+# چند پیامِ آخرِ هر مکالمه (کاربر+منشی، جمعاً) به‌عنوانِ context برای پاسخِ
+# هوش‌مصنوعیِ منشی نگه داشته بشه - تا جواب‌ها به همدیگه ربط داشته باشن، نه
+# این‌که هر پیام کاملاً مستقل و بدونِ حافظه جواب داده بشه. این حافظه فقط
+# درون‌حافظه‌ایه (نه دیتابیس) و با ری‌استارتِ پروسه پاک می‌شه.
+ASSISTANT_HISTORY_LIMIT = max(int(os.getenv("ASSISTANT_HISTORY_LIMIT", "10")), 0)
+
 # --- صوت و متن (اختیاری: .رونویسی / .متن‌به‌صوت) ---
 # پیش‌فرض: از همون AI_API_KEY/AI_API_BASE بالا استفاده می‌کنن. ولی چون خیلی
 # از سرویس‌های واسط/proxy (مثلاً OpenRouter و مشابه‌ها) endpointهای صوتی

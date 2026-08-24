@@ -1,6 +1,7 @@
 """۸) منشی چت: پاسخ خودکار هوشمند با تشخیص آنلاین/آفلاین"""
 import asyncio
 import logging
+from collections import deque
 from datetime import datetime, timezone
 
 from telethon import events, functions
@@ -26,6 +27,49 @@ _last_self_activity = datetime.min.replace(tzinfo=timezone.utc)
 # این‌ها نباید به‌عنوانِ «فعالیتِ خودِ کاربر» حساب بشن، وگرنه منشی با هر
 # جوابی که خودش می‌ده، خودش رو «آنلاین» تشخیص می‌داد و بلافاصله خاموش می‌شد.
 _auto_sent_keys: set[tuple[int, int]] = set()
+
+# حافظه‌ی مکالمه‌ایِ منشی (فقط برای حالتِ هوش‌مصنوعی): به ازای هر
+# (chat_id, sender_id) یه deque از پیام‌های اخیر (کاربر+منشی) نگه می‌داریم
+# و موقعِ ساختنِ پرامپت، قبل از پیامِ جدید به AI می‌دیمش - تا مدل بتونه به
+# چیزی که قبلاً توی همون مکالمه گفته شده ارجاع بده. drop-in-place: فقط
+# در حافظه‌ی پروسه‌ست (نه دیتابیس)، با ری‌استارت پاک می‌شه، و با
+# ASSISTANT_HISTORY_LIMIT محدود می‌شه که خودش رشدِ بی‌نهایتِ حافظه/تعدادِ
+# توکنِ ارسالی به AI رو کنترل می‌کنه.
+_conv_history: dict[tuple[int, int], deque] = {}
+
+
+def _history_key(chat_id: int, sender_id: int) -> tuple[int, int]:
+    return (chat_id, sender_id)
+
+
+def _get_history_messages(key: tuple[int, int]) -> list[dict]:
+    if config.ASSISTANT_HISTORY_LIMIT <= 0:
+        return []
+    return list(_conv_history.get(key, ()))
+
+
+def _remember_exchange(key: tuple[int, int], user_text: str, assistant_text: str) -> None:
+    limit = config.ASSISTANT_HISTORY_LIMIT
+    if limit <= 0:
+        return
+    dq = _conv_history.get(key)
+    if dq is None:
+        dq = deque(maxlen=limit)
+        _conv_history[key] = dq
+    elif dq.maxlen != limit:
+        # اگه ASSISTANT_HISTORY_LIMIT توی ران‌تایم عوض بشه (کمتر رایج، ولی
+        # برای سازگاری) یه deque جدید با maxlenِ به‌روز می‌سازیم.
+        dq = deque(dq, maxlen=limit)
+        _conv_history[key] = dq
+    dq.append({"role": "user", "content": user_text})
+    dq.append({"role": "assistant", "content": assistant_text})
+
+
+def _clear_all_history() -> int:
+    count = len(_conv_history)
+    _conv_history.clear()
+    return count
+
 
 _ASSISTANT_MODE_FA = {
     "auto": "خودکار (همه‌جا)",
@@ -65,6 +109,8 @@ def _assistant_status_text():
         f"• منبعِ پاسخ: {'هوش مصنوعی 🤖' if assistant_state['ai_mode'] else 'متنِ ثابت'}\n"
         f"• محدودیتِ پاسخ: "
         f"{'بدون محدودیت - به همه‌ی پیام‌ها جواب می‌ده' if assistant_state['ai_mode'] else 'فقط یک‌بار به هر نفر در هر نشست'}\n"
+        f"• حافظه‌ی مکالمه: "
+        f"{f'تا {config.ASSISTANT_HISTORY_LIMIT} پیامِ آخرِ هر مکالمه ({len(_conv_history)} مکالمه فعال)' if config.ASSISTANT_HISTORY_LIMIT > 0 else 'خاموش'}\n"
         f"• متن ثابت (fallback): {assistant_state['text'] or '(تنظیم نشده)'}\n"
         f"• چت‌های مستثنی: {len(assistant_state['exclude'])}\n"
         f"• چت‌های همیشه‌فعال: {len(assistant_state['include'])}\n\n"
@@ -167,7 +213,10 @@ async def assistant_handler(event):
                 "✅ پاسخِ خودکارِ منشی از این به بعد به‌جای متنِ ثابت، با هوش مصنوعی تولید می‌شه.\n"
                 "⚠️ توی این حالت به **همه‌ی** پیام‌ها جواب می‌ده (نه فقط یک‌بار به هر نفر) - "
                 "توی چت‌های شلوغ ممکنه هزینه/تعدادِ درخواستِ زیادی به سرویسِ AI بزنه.\n"
-                "⚠️ نیازمندِ `AI_API_KEY` ست‌شده‌ست؛ اگه ست نباشه یا خطا بده، خودکار به متنِ ثابتِ فعلی fallback می‌کنه."
+                "⚠️ نیازمندِ `AI_API_KEY` ست‌شده‌ست؛ اگه ست نباشه یا خطا بده، خودکار به متنِ ثابتِ فعلی fallback می‌کنه.\n"
+                f"🧠 هر مکالمه تا {config.ASSISTANT_HISTORY_LIMIT} پیامِ آخرش رو به‌عنوانِ حافظه به مدل می‌ده "
+                "تا جواب‌ها پیوسته باشن (با `ASSISTANT_HISTORY_LIMIT` قابلِ تنظیمه؛ برای پاک‌کردنش: "
+                f"`{PREFIX}منشی حافظه پاک`)."
             )
         if opt in ("خاموش", "off"):
             assistant_state["ai_mode"] = False
@@ -199,6 +248,20 @@ async def assistant_handler(event):
         assistant_state["exclude"].clear()
         await save_assistant()
         return await event.edit("🗑 لیست مستثنی/شامل پاک شد")
+
+    if sub in ("حافظه", "history"):
+        if rest.strip().lower() in ("پاک", "clear"):
+            n = _clear_all_history()
+            return await event.edit(f"🗑 حافظه‌ی مکالمه‌ی {n} چت پاک شد")
+        if config.ASSISTANT_HISTORY_LIMIT <= 0:
+            return await event.edit(
+                "🧠 حافظه‌ی مکالمه‌ی منشی خاموشه (`ASSISTANT_HISTORY_LIMIT=0`)."
+            )
+        return await event.edit(
+            f"🧠 حافظه‌ی مکالمه: تا {config.ASSISTANT_HISTORY_LIMIT} پیامِ آخرِ هر مکالمه "
+            f"({len(_conv_history)} مکالمه فعال)\n"
+            f"برای پاک‌کردن: `{PREFIX}منشی حافظه پاک`"
+        )
 
     await event.edit(f"دستور نامعتبره. برای وضعیت کامل: `{PREFIX}منشی`")
 
@@ -253,13 +316,16 @@ async def assistant_autoreply(event):
                     except (ai.AIDisabledError, ai.AIRequestError):
                         incoming_text = ""
                 incoming_text = incoming_text or "(بدون متن)"
+                hist_key = _history_key(event.chat_id, sender_id)
                 messages = [
                     {"role": "system", "content": _ASSISTANT_AI_SYSTEM},
+                    *_get_history_messages(hist_key),
                     {"role": "user", "content": incoming_text},
                 ]
                 ai_answer = await ai.ask_ai(messages, max_tokens=300)
                 if ai_answer:
                     reply_text = f"{ai_answer}\n{_AI_WATERMARK}"
+                    _remember_exchange(hist_key, incoming_text, ai_answer)
             except (ai.AIDisabledError, ai.AIRequestError):
                 _record_error()
                 logger.exception("خطا در پاسخِ هوش‌مصنوعیِ منشی - fallback به متنِ ثابت")
