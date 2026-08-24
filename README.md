@@ -28,7 +28,7 @@ bot/
   handlers/                   هر فایل یک دسته از دستورات (همون شماره‌گذاری راهنمای قبلی)
     general.py, tools.py, notes.py, messages.py, fun.py, font.py,
     profile.py, assistant.py, ai.py, admin.py, groupguard.py, backup.py,
-    autopost.py, stats.py, scheduler.py, help.py, panel.py
+    autopost.py, stats.py, scheduler.py, help.py, panel.py, media.py, ocr.py
 migrations/                   Alembic migrations (schema PostgreSQL)
 scripts/
   migrate_json_to_postgres.py  انتقال یک‌بارِ JSONهای قدیمی به PostgreSQL (با بکاپ و شمارش قبل/بعد)

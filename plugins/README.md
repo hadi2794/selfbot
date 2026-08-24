@@ -1,26 +1,30 @@
-# پلاگین‌ها
+# 🧩 Plugin System
 
-هر فایل `.py` مستقیم توی این پوشه (یا هر زیرپوشه‌ای که `__init__.py` داشته
-باشه) موقعِ استارتاپِ ربات به‌صورت خودکار توسطِ `bot/plugin_loader.py`
-بارگذاری می‌شه. برای دیدنِ لیستِ پلاگین‌های بارگذاری‌شده: `.پلاگین`
+The bot supports hot plugin installation, removal and reload.
 
-## ساختارِ یه پلاگینِ ساده (`plugins/example.py`)
+## Commands
+
+- `.پلاگین` — list loaded plugins
+- `.پلاگین نصب <GitHub blob/raw URL>` — install a Python plugin at runtime
+- `.پلاگین حذف <name>` — remove an installed plugin
+- `.پلاگین reload <name>` — unload and load again without restarting
+
+English aliases are also supported: `plugins`, `install`, `remove`, `reload`.
+
+## Plugin format
+
+A plugin can use the same Telethon pattern as built-in handlers:
 
 ```python
-"""مثال: یه پلاگینِ ساده."""
 from bot.runtime import client
 from telethon import events
 
-# با ثبتِ مستقیمِ @client.on همون‌جوری که بقیه‌ی bot/handlers/*.py کار
-# می‌کنن، پلاگین هم دستورِ خودش رو اضافه می‌کنه:
-@client.on(events.NewMessage(outgoing=True, pattern=r"^\.پلاگین‌تست$"))
-async def _test_handler(event):
-    await event.edit("این پیام از یه پلاگینه ✅")
+@client.on(events.NewMessage(outgoing=True, pattern=r"^\.hello$"))
+async def hello(event):
+    await event.edit("Hello from plugin ✅")
 
-# اختیاری: برای نمایش توی `.پلاگین`
-commands = ["پلاگین‌تست"]
+commands = ["hello"]
 
-# اختیاری: موقعِ بارگذاری/تخلیه صدا زده می‌شن
 async def startup():
     pass
 
@@ -28,11 +32,25 @@ async def shutdown():
     pass
 ```
 
-⚠️ پلاگین‌ها با همون سطح دسترسیِ خودِ ربات (یعنی اکانتِ شخصیِ تلگرامت)
-اجرا می‌شن - فقط پلاگینی رو اینجا بذار که خودت نوشتی یا کاملاً بهش
-اعتماد داری.
+For clean hot-unload, the loader tracks callback functions defined by the plugin.
+If a plugin registers handlers dynamically, put those callback functions in the
+module-level `handlers` list.
 
-⚠️ `startup()` قبل از لاگین‌شدنِ کامل و مشخص‌شدنِ `runtime.SELF_ID` صدا زده
-می‌شه (چون بارگذاریِ پلاگین‌ها زودتر از `client.get_me()` انجام می‌شه) - اگه
-پلاگینت به شناسه‌ی خودِ اکانت نیاز داره، از داخلِ خودِ هندلرِ دستور بخونش
-(`from bot import runtime; runtime.SELF_ID`)، نه از داخلِ `startup()`.
+## Railway persistence
+
+Railway containers do not guarantee runtime-written files will survive a new
+deployment. For persistent installed plugins, attach a Railway Volume and mount
+it at `/data`, then set:
+
+```text
+PLUGIN_INSTALL_DIR=/data/plugins
+```
+
+The repository's built-in `plugins/` directory remains separate from installed
+plugins, so the Volume does not hide the built-ins.
+
+## Security
+
+A Python plugin executes with the same privileges as the userbot. Only install
+code you trust. The loader checks size, UTF-8 and Python syntax before loading,
+but these checks are **not** a sandbox.

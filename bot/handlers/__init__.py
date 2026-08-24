@@ -20,6 +20,7 @@ from . import (
     media,
     messages,
     notes,
+    ocr,
     panel,
     profile,
     scheduler,
