@@ -23,10 +23,18 @@ logger = logging.getLogger("selfbot.handlers.assistant")
 # آپدیت نمی‌شه).
 _last_self_activity = datetime.min.replace(tzinfo=timezone.utc)
 
-# (chat_id, message_id) پیام‌هایی که خودِ منشی به‌عنوانِ auto-reply فرستاده -
-# این‌ها نباید به‌عنوانِ «فعالیتِ خودِ کاربر» حساب بشن، وگرنه منشی با هر
-# جوابی که خودش می‌ده، خودش رو «آنلاین» تشخیص می‌داد و بلافاصله خاموش می‌شد.
-_auto_sent_keys: set[tuple[int, int]] = set()
+# شمارنده‌ی «همین الان دارم توی این چت auto-reply می‌فرستم» (chat_id -> تعداد
+# درحال‌ارسال). قبل از فرستادنِ پاسخ (نه بعدش) پر می‌شه - چرا این مهمه:
+# آپدیتِ «پیامِ خروجیِ جدید» که assistant_self_activity_watcher رو صدا می‌زنه،
+# توسطِ Telethon همون وسطِ خودِ فراخوانیِ event.reply() (قبل از این‌که
+# await برگرده) به‌عنوانِ یه تسکِ جدا پردازش می‌شه؛ یعنی اگه فقط *بعد* از
+# reply() یه‌جایی مارکش کنیم (مثلاً با آیدیِ پیام)، ممکنه اون تسکِ دیگه زودتر
+# از این‌که برسیم به خطِ مارک‌کردن اجرا بشه - و چون هنوز مارک نشده، به‌غلط
+# به‌عنوانِ «خودِ کاربر همین الان پیام فرستاد» حساب بشه و بلافاصله منشی رو
+# خاموش کنه (دقیقاً همون باگی که باعث می‌شد منشی موقعِ آفلاین‌بودن، همون اول
+# یه پاسخ بده و بعد خودش رو خاموش کنه). با شمارنده‌ی بر پایه‌ی chat_id (نه
+# آیدیِ پیام) و افزایشِ *قبل* از await، این پنجره‌ی رقابتی کاملاً بسته می‌شه.
+_auto_reply_in_flight: dict[int, int] = {}
 
 # حافظه‌ی مکالمه‌ایِ منشی (فقط برای حالتِ هوش‌مصنوعی): به ازای هر
 # (chat_id, sender_id) یه deque از پیام‌های اخیر (کاربر+منشی) نگه می‌داریم
@@ -332,11 +340,18 @@ async def assistant_autoreply(event):
 
         if not reply_text:
             return  # نه متنِ ثابتی هست، نه AI جواب داد
-        sent = await event.reply(reply_text)
-        if sent is not None:
-            # این پیام رو مارک می‌کنیم که هندلرِ تشخیصِ فعالیت (پایینِ همین
-            # فایل) اشتباهی به‌عنوانِ «کاربر خودش پیام فرستاد» حسابش نکنه.
-            _auto_sent_keys.add((event.chat_id, sent.id))
+
+        # قبل از await (نه بعدش) مارک می‌کنیم - نگاهِ بالا به تعریفِ
+        # _auto_reply_in_flight برای توضیحِ کاملِ چرایی.
+        _auto_reply_in_flight[event.chat_id] = _auto_reply_in_flight.get(event.chat_id, 0) + 1
+        try:
+            await event.reply(reply_text)
+        finally:
+            remaining = _auto_reply_in_flight.get(event.chat_id, 1) - 1
+            if remaining <= 0:
+                _auto_reply_in_flight.pop(event.chat_id, None)
+            else:
+                _auto_reply_in_flight[event.chat_id] = remaining
     except Exception:
         _record_error()
         logger.exception("خطا در پاسخ خودکار منشی")
@@ -356,10 +371,8 @@ async def assistant_self_activity_watcher(event):
     """
     global _last_self_activity
 
-    key = (event.chat_id, event.id)
-    if key in _auto_sent_keys:
-        # این خودِ منشیه که داره auto-reply می‌ده، نه کاربر - نادیده بگیر.
-        _auto_sent_keys.discard(key)
+    if _auto_reply_in_flight.get(event.chat_id, 0) > 0:
+        # این خودِ منشیه که داره توی همین چت auto-reply می‌ده، نه کاربر - نادیده بگیر.
         return
 
     _last_self_activity = datetime.now(timezone.utc)
