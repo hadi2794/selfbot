@@ -195,8 +195,34 @@ async def _target_chats() -> list[tuple[int, str]]:
     return result
 
 
-async def _collect_today_lines(chat_id: int) -> list[str]:
-    """پیام‌های متنیِ همین چت که تاریخ‌شون «امروز» (وقتِ محلی) باشه."""
+def _media_label(m) -> str:
+    """
+    برچسبِ کوتاهِ فارسی برای پیام‌های رسانه‌ای - چون کانال‌های خبری اغلب
+    پست‌هاشون عکس/ویدیو (با کپشنِ کوتاه یا حتی بدونِ کپشن) هستن، اگه فقط
+    دنبالِ raw_text باشیم، تقریباً کلِ پستِ روزانه‌ی این کانال‌ها نادیده گرفته
+    می‌شه. اینجا نوعِ رسانه رو تشخیص می‌دیم تا حتی بدونِ کپشن هم توی خلاصه لحاظ بشه.
+    """
+    if m.photo:
+        return "[عکس]"
+    if m.video or m.gif:
+        return "[ویدیو]"
+    if m.voice:
+        return "[پیامِ صوتی]"
+    if m.audio:
+        return "[فایلِ صوتی]"
+    if m.sticker:
+        return "[استیکر]"
+    if m.poll:
+        return "[نظرسنجی]"
+    if m.document:
+        return "[فایل]"
+    if m.web_preview:
+        return "[لینک]"
+    return "[رسانه]"
+
+
+async def _collect_today_lines(chat_id: int, fallback_name: str) -> list[str]:
+    """پیام‌های «امروز» (وقتِ محلی) همین چت - متنی یا رسانه‌ای (با برچسب+کپشن)."""
     today_local = _local_now().date()
     lines = []
     try:
@@ -208,16 +234,27 @@ async def _collect_today_lines(chat_id: int) -> list[str]:
                 if msg_local.date() < today_local:
                     break  # پیام‌ها نزولی‌ان؛ رسیدیم به دیروز، دیگه نیازی به ادامه نیست
                 continue
-            if not m.raw_text:
-                continue
+
+            if m.raw_text:
+                content = m.raw_text
+            elif m.media:
+                # پیامِ رسانه‌ایِ بدونِ کپشن (خیلی رایج توی کانال‌های خبری) -
+                # به‌جای نادیده‌گرفتنِ کامل، حداقل نوعش رو توی خلاصه لحاظ کن.
+                content = _media_label(m)
+            else:
+                continue  # پیامِ سرویسی (مثلِ «عکسِ گروه عوض شد») - قابلِ خلاصه‌کردن نیست
+
             sender = m.sender
+            # برای پست‌های برادکستِ کانال‌ها معمولاً sender نداریم (Telegram
+            # فرستنده‌ی تک‌به‌تک نمی‌فرسته مگر امضای پست فعال باشه)؛ توی این
+            # حالت به‌جای «؟»ی بی‌معنی، اسمِ خودِ چت/کانال منطقی‌تره.
             name = (
                 getattr(sender, "first_name", None)
                 or getattr(sender, "title", None)
                 or getattr(sender, "username", None)
-                or "؟"
+                or fallback_name
             )
-            lines.append(f"{name}: {m.raw_text}")
+            lines.append(f"{name}: {content}")
     except Exception:
         logger.exception("خطا در خوندنِ پیام‌های چت %s برای خلاصه‌ی روزانه", chat_id)
         _record_error()
@@ -251,7 +288,7 @@ async def _run_daily_digest() -> int:
     targets = await _target_chats()
     sections = []
     for chat_id, title in targets:
-        lines = await _collect_today_lines(chat_id)
+        lines = await _collect_today_lines(chat_id, title)
         if not lines:
             continue
         summary = await _summarize_chat(title, lines)
