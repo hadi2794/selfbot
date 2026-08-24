@@ -499,7 +499,27 @@ if runtime.bot_client is not None:
             return
 
         if action == "close":
-            await event.delete()
+            # نکته‌ی مهم: `event.delete()` فقط وقتی کار می‌کنه که پیامِ پنل یه
+            # پیامِ عادیِ خودِ بات کمکی باشه (یعنی توی چتِ خصوصیِ خودِ بات).
+            # وقتی پنل با ترفندِ inline (client.inline_query(...).click(...))
+            # توی یه چت/گروهِ دیگه فرستاده می‌شه، تلگرام فقط یه inline_message_id
+            # به بات می‌ده - و API ای برای حذفِ پیام از طریقِ همون شناسه وجود
+            # نداره (فقط edit ازش پشتیبانی می‌شه)، برای همین `event.delete()`
+            # اونجا سرِ همچین پیام‌هایی fail می‌شه و دکمه‌ی «بستن» بی‌اثر
+            # به‌نظر می‌رسید. راه‌حل: اول با edit (که هم توی چتِ خصوصی هم
+            # inline کار می‌کنه) دکمه‌ها رو برمی‌داریم و متن رو «بسته‌شد» می‌کنیم،
+            # و فقط اگه واقعاً یه پیامِ عادی (نه inline) بود، تلاش می‌کنیم
+            # کاملاً حذفش هم بکنیم (برای تمیزیِ بیشتر توی چتِ خودِ بات).
+            try:
+                await event.edit("✖️ پنل بسته شد.", buttons=None)
+            except Exception:
+                pass
+            try:
+                if getattr(event.query, "msg_id", None):
+                    await event.delete()
+            except Exception:
+                pass
+            await event.answer()
             return
 
         if action.startswith("cat:"):
