@@ -13,11 +13,14 @@
 پوشش می‌ده:
 
   • زمان‌بندی   → reminder, schedule_message
-  • یادداشت‌ها  → note_add, note_get, note_delete
+  • یادداشت‌ها  → note_add, note_get, note_delete, note_list
   • ابزار       → calc, translate, currency, genpass
   • پروفایل     → setbio, setname
   • فونت        → font_apply
   • سرگرمی      → coin_flip, random_number, choose, magic8ball
+  • منشی        → assistant_toggle (روشن/خاموش/خودکار)
+  • خلاصه‌ی روزانه → daily_digest_toggle (روشن/خاموش/اجرای فوری)
+  • آمار        → stats_view (فقط خواندنی)
 
 عمداً چیزهایی مثلِ مدیریتِ گروه (بن/کیک/ارتقا)، عملیاتِ فایلی (عکسِ پروفایل،
 QR، صوت)، و اتوماسیون‌های ماندگار (autopost/groupguard) توی این رجیستری
@@ -44,9 +47,11 @@ from ..clock import apply_clock_now as _apply_clock_now, clock_state, persist_cl
 from ..config import PREFIX
 from ..fonts import FONT_STYLES
 from ..runtime import client
+from ..storage.assistant_store import assistant_state, save_assistant
+from ..storage.daily_digest_store import daily_digest_state, save_daily_digest
 from ..storage.notes_store import delete_note, load_notes, save_note
 from ..storage.scheduler_store import create_job
-from ..storage.stats_store import record_error as _record_error
+from ..storage.stats_store import STATS, record_error as _record_error
 from ..utils import pat
 from .fun import _MAGIC8BALL_ANSWERS
 from .scheduler import _FULL_RE, _local_now, _to_utc_aware
@@ -416,6 +421,102 @@ class _Magic8Ball:
     async def execute(event, norm):
         answer = random.choice(_MAGIC8BALL_ANSWERS)
         return f"🔮 سوال: {norm['question']}\nپاسخ جادوگر: **{answer}**"
+
+
+# ---------------------------------------------------------- یادداشت‌ها (ادامه) ---
+@_register("note_list", "params: {} — نمایشِ لیستِ کلیدِ همه‌ی یادداشت‌های ذخیره‌شده")
+class _NoteList:
+    @staticmethod
+    async def build(params, event):
+        return True, "📋 لیستِ همه‌ی یادداشت‌ها نشون داده بشه؟", {}
+
+    @staticmethod
+    async def execute(event, norm):
+        notes = await load_notes()
+        if not notes:
+            return "📋 هنوز هیچ یادداشتی ذخیره نشده"
+        return "📋 **یادداشت‌ها:**\n" + "\n".join(f"• `{k}`" for k in notes)
+
+
+# ------------------------------------------------------------- منشی ---
+@_register(
+    "assistant_toggle",
+    'params: {"state": "on یا off یا auto"} — روشن/خاموش/خودکارکردنِ منشیِ خودکارِ چت',
+)
+class _AssistantToggle:
+    @staticmethod
+    async def build(params, event):
+        state = _str_param(params, "state").lower()
+        if state not in ("on", "off", "auto"):
+            return False, "🤖 مشخص نبود منشی روشن/خاموش/خودکار بشه.", None
+        label = {"on": "روشن (دستی)", "off": "خاموش (دستی)", "auto": "خودکار (بر اساسِ آنلاین/آفلاین‌بودنت)"}[state]
+        return True, f"🤖 منشیِ چت روی «{label}» تنظیم بشه؟", {"state": state}
+
+    @staticmethod
+    async def execute(event, norm):
+        state = norm["state"]
+        if state == "on":
+            assistant_state["enabled"] = True
+            assistant_state["auto_detect"] = False
+            assistant_state["replied"] = set()
+        elif state == "off":
+            assistant_state["enabled"] = False
+            assistant_state["auto_detect"] = False
+        else:
+            assistant_state["auto_detect"] = True
+        await save_assistant()
+        label = {"on": "روشن ✅", "off": "خاموش ❌", "auto": "خودکار 🔄"}[state]
+        return f"🤖 منشیِ چت: {label}"
+
+
+# --------------------------------------------------------- خلاصه‌ی روزانه ---
+@_register(
+    "daily_digest_toggle",
+    'params: {"action": "on یا off یا now"} — روشن/خاموش‌کردنِ ارسالِ خودکارِ خلاصه‌ی روزانه، یا اجرای فوریِ همین الانش',
+)
+class _DailyDigestToggle:
+    @staticmethod
+    async def build(params, event):
+        action = _str_param(params, "action").lower()
+        if action not in ("on", "off", "now"):
+            return False, "🌙 مشخص نبود خلاصه‌ی روزانه روشن/خاموش بشه یا همین الان اجرا بشه.", None
+        label = {"on": "روشن", "off": "خاموش", "now": "اجرای فوری (همین الان)"}[action]
+        return True, f"🌙 خلاصه‌ی روزانه: «{label}»؟", {"action": action}
+
+    @staticmethod
+    async def execute(event, norm):
+        action = norm["action"]
+        if action == "on":
+            daily_digest_state["enabled"] = True
+            await save_daily_digest()
+            return "🌙 ارسالِ خودکارِ خلاصه‌ی روزانه روشن شد"
+        if action == "off":
+            daily_digest_state["enabled"] = False
+            await save_daily_digest()
+            return "🌙 ارسالِ خودکارِ خلاصه‌ی روزانه خاموش شد"
+        # action == "now"
+        from .daily_digest import _run_daily_digest
+        n = await _run_daily_digest()
+        return f"🌙 خلاصه‌ی {n} چت به Saved Messages ارسال شد"
+
+
+# ----------------------------------------------------------------- آمار ---
+@_register("stats_view", "params: {} — نمایشِ خلاصه‌ی آمارِ استفاده از سلف‌بات (فقط خواندنی)")
+class _StatsView:
+    @staticmethod
+    async def build(params, event):
+        return True, "📊 آمارِ استفاده از سلف‌بات نشون داده بشه؟", {}
+
+    @staticmethod
+    async def execute(event, norm):
+        return (
+            "📊 **آمار سلف‌بات**\n\n"
+            f"• کل دستورهای اجراشده: {STATS['commands_total']}\n"
+            f"• کل پیام‌های دیده‌شده: {STATS['messages_total']}\n"
+            f"• ارسالِ خودکارِ موفق: {STATS['autopost_ok']}\n"
+            f"• ارسالِ خودکارِ ناموفق: {STATS['autopost_fail']}\n"
+            f"• خطاهای سیستمی: {STATS['errors']}"
+        )
 
 
 # ===================================================== ساختِ system prompt ===
