@@ -173,10 +173,19 @@ async def assistant_handler(event):
 
     if sub in ("خودکار", "auto"):
         assistant_state["auto_detect"] = True
+        # به‌جای صبرکردن تا دورِ بعدیِ assistant_status_watcher (تا
+        # ASSISTANT_CHECK_INTERVAL ثانیه)، همین الان یه‌بار وضعیتِ
+        # آنلاین/آفلاین رو چک می‌کنیم تا enabled بلافاصله درست بشه.
+        try:
+            await _recompute_enabled_from_online_status()
+        except Exception:
+            _record_error()
+            logger.exception("خطا در چکِ فوریِ وضعیتِ آنلاین/آفلاین بعدِ برگشت به حالتِ خودکار")
         await save_assistant()
         return await event.edit(
             "✅ تشخیص خودکار آنلاین/آفلاین دوباره فعال شد.\n"
-            "از این به بعد روشن/خاموش‌بودن منشی خودش بر اساس آنلاین/آفلاین‌بودنت مدیریت می‌شه."
+            "از این به بعد روشن/خاموش‌بودن منشی خودش بر اساس آنلاین/آفلاین‌بودنت مدیریت می‌شه.\n\n"
+            + _assistant_status_text()
         )
 
     if sub in ("متن", "text"):
@@ -375,9 +384,47 @@ async def assistant_self_activity_watcher(event):
         # این خودِ منشیه که داره توی همین چت auto-reply می‌ده، نه کاربر - نادیده بگیر.
         return
 
+    raw = (event.raw_text or "").strip()
+    if raw.startswith(PREFIX):
+        # این یه دستورِ کنترلیِ خودِ سلف‌بات (مثلِ `.منشی خودکار` یا حتی صرفِ
+        # چک‌کردنِ وضعیت با `.منشی`) - نه یه پیامِ واقعی به یه نفر. اگه این‌ها
+        # رو هم «فعالیت» حساب می‌کردیم، هر بار که برای عوض‌کردنِ حالت یا چک‌کردنِ
+        # وضعیت تایپ می‌کردید، تایمرِ ۳-دقیقه‌ای (ASSISTANT_ONLINE_THRESHOLD)
+        # ریست می‌شد - و دقیقاً همین باعث می‌شد بعدِ برگردوندن به حالتِ خودکار،
+        # منشی تا ابد روشن نشه (چون هر چک‌کردنِ وضعیت، خودش دوباره تایمر رو
+        # ریست می‌کرد). دستورهای کنترلی نباید نشونه‌ی «الان دارم چت می‌کنم» باشن.
+        return
+
     _last_self_activity = datetime.now(timezone.utc)
     if assistant_state["auto_detect"] and assistant_state["enabled"]:
         assistant_state["enabled"] = False
+
+
+async def _recompute_enabled_from_online_status() -> None:
+    """
+    یه‌بار وضعیتِ آنلاین/آفلاین رو چک می‌کنه و enabled رو بر همون اساس تنظیم
+    می‌کنه. هم توسطِ assistant_status_watcher (هر ASSISTANT_CHECK_INTERVAL
+    ثانیه) و هم مستقیم بعدِ `.منشی خودکار` صدا زده می‌شه - تا لازم نباشه بعدِ
+    برگشتن به حالتِ خودکار، تا ۳۰ ثانیه (یه دورِ کاملِ چک) صبر کرد.
+    """
+    result = await client(functions.account.GetAuthorizationsRequest())
+    others = [a for a in result.authorizations if not a.current]
+    if others:
+        last_active = max(a.date_active for a in others)
+        seconds_since = (datetime.now(timezone.utc) - last_active).total_seconds()
+        online_elsewhere = seconds_since < config.ASSISTANT_ONLINE_THRESHOLD
+    else:
+        online_elsewhere = False  # هیچ سشن دیگه‌ای وصل نیست
+
+    seconds_since_self = (datetime.now(timezone.utc) - _last_self_activity).total_seconds()
+    if seconds_since_self < config.ASSISTANT_ONLINE_THRESHOLD:
+        online_elsewhere = True
+
+    new_enabled = not online_elsewhere
+    if new_enabled != assistant_state["enabled"]:
+        if new_enabled:
+            assistant_state["replied"] = set()  # نشست تازه = دوباره به همه جواب بده
+        assistant_state["enabled"] = new_enabled
 
 
 async def assistant_status_watcher():
@@ -389,9 +436,8 @@ async def assistant_status_watcher():
 
     این چک همیشه با سیگنالِ آنیِ assistant_self_activity_watcher ترکیب می‌شه:
     حتی اگه GetAuthorizationsRequest بگه «آفلاینی» (مثلاً چون date_active
-    سرور هنوز آپدیت نشده)، اگه به‌تازگی خودت یه پیام فرستاده باشی، همچنان
-    آنلاین حساب می‌شی - وگرنه ممکن بود درست همون چند ثانیه‌ای که
-    assistant_self_activity_watcher خاموشش کرده، این تابع دوباره روشنش کنه.
+    سرور هنوز آپدیت نشده)، اگه به‌تازگی خودت یه پیامِ واقعی (نه یه دستورِ
+    کنترلی) فرستاده باشی، همچنان آنلاین حساب می‌شی.
 
     اگه با .assistant on یا .assistant off دستی قفلش کرده باشی (auto_detect
     خاموش)، این تابع اصلاً دست به enabled نمی‌زنه - حتی اگه آفلاین بشی.
@@ -403,24 +449,7 @@ async def assistant_status_watcher():
             await asyncio.sleep(config.ASSISTANT_CHECK_INTERVAL)
             continue
         try:
-            result = await client(functions.account.GetAuthorizationsRequest())
-            others = [a for a in result.authorizations if not a.current]
-            if others:
-                last_active = max(a.date_active for a in others)
-                seconds_since = (datetime.now(timezone.utc) - last_active).total_seconds()
-                online_elsewhere = seconds_since < config.ASSISTANT_ONLINE_THRESHOLD
-            else:
-                online_elsewhere = False  # هیچ سشن دیگه‌ای وصل نیست
-
-            seconds_since_self = (datetime.now(timezone.utc) - _last_self_activity).total_seconds()
-            if seconds_since_self < config.ASSISTANT_ONLINE_THRESHOLD:
-                online_elsewhere = True
-
-            new_enabled = not online_elsewhere
-            if new_enabled != assistant_state["enabled"]:
-                if new_enabled:
-                    assistant_state["replied"] = set()  # نشست تازه = دوباره به همه جواب بده
-                assistant_state["enabled"] = new_enabled
+            await _recompute_enabled_from_online_status()
             health.update_worker_status("assistant", "ok")
         except Exception as e:
             _record_error()
