@@ -62,6 +62,9 @@ class AssistantSettings(Base):
     auto_detect: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     manual_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     ai_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # لایه‌ی زمان‌بندی (پنجره‌های AssistantScheduleWindow پایین) کلاً فعال/غیرفعاله؛
+    # False یعنی پنجره‌ها پاک نمی‌شن ولی موقتاً بی‌اثرن (بدونِ نیاز به دوباره تعریف‌کردنشون).
+    schedule_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     updated_at: Mapped[dt.datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
     )
@@ -88,6 +91,34 @@ class AssistantChatRule(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class AssistantScheduleWindow(Base):
+    """
+    پنجره‌های زمانیِ ثابتِ «حتماً آفلاین»ِ منشیِ خودکار (مثلاً ساعتِ خواب یا
+    ساعتِ کاری): در این بازه‌ها، صرف‌نظر از فعالیتِ اخیرِ خودت، منشی روشن
+    می‌مونه - در کنارِ تشخیصِ رفتاریِ قبلی، نه به‌جاش (نگاهِ کاملِ منطق توی
+    bot/handlers/assistant.py، تابعِ _recompute_enabled_from_signals).
+
+    با start_minute/end_minute (دقیقه از نیمه‌شب، ۰ تا ۱۴۳۹) ذخیره می‌شن، نه
+    sa.Time، تا محاسبه‌ی «الان توی بازه‌ام؟» یه مقایسه‌ی عددیِ ساده بمونه و
+    درگیرِ تبدیل‌های timezone/DST نشه (پروژه از همون الگوی TIMEZONE_OFFSET
+    استفاده می‌کنه که scheduler.py/daily_digest.py هم استفاده می‌کنن). اگه end_minute از
+    start_minute کمتر باشه یعنی بازه از نیمه‌شب رد می‌شه (مثلاً خواب: ۲۳:۰۰
+    تا ۰۸:۰۰) - این حالت مجازه و توی کدِ تشخیص جداگانه handle می‌شه.
+    """
+
+    __tablename__ = "assistant_schedule_windows"
+    __table_args__ = (
+        CheckConstraint("start_minute >= 0 AND start_minute < 1440", name="ck_assistant_window_start_range"),
+        CheckConstraint("end_minute >= 0 AND end_minute < 1440", name="ck_assistant_window_end_range"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    label: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    start_minute: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    end_minute: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now(), nullable=False)
 
 
 # ------------------------------------------------------------ Autopost ---

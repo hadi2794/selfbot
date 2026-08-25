@@ -30,6 +30,7 @@ logger = logging.getLogger("selfbot.handlers.settings_center")
 SETTINGS_KEYS = {
     "assistant_mode": "🤖 منشی",
     "ai_mode": "🧠 AI منشی",
+    "assistant_schedule_enabled": "🗓 زمان‌بندیِ منشی",
     "scheduler_enabled": "⏰ زمان‌بند/یادآوری",
     "autopost_enabled": "🔁 ارسالِ خودکار",
     "daily_digest_enabled": "🌙 خلاصه‌ی روزانه",
@@ -47,6 +48,7 @@ def _live_status() -> dict:
     return {
         "assistant_mode": assistant_state["enabled"],
         "ai_mode": assistant_state["ai_mode"],
+        "assistant_schedule_enabled": assistant_state["schedule_enabled"],
         "scheduler_enabled": toggles["scheduler_enabled"],
         "autopost_enabled": autopost_state["enabled"],
         "daily_digest_enabled": daily_digest_state["enabled"],
@@ -116,6 +118,14 @@ async def _set_setting(event, key: str, value: str):
         await save_assistant()
     elif key == "ai_mode":
         assistant_state["ai_mode"] = enabled
+        await save_assistant()
+    elif key == "assistant_schedule_enabled":
+        # نکته: این فقط لایه‌ی زمان‌بندی رو روشن/خاموش می‌کنه، نه خودِ enabled -
+        # اگه auto_detect روشن باشه، بازبینیِ بعدیِ assistant_status_watcher
+        # (حداکثر تا ASSISTANT_CHECK_INTERVAL ثانیه‌ی دیگه) enabled رو با
+        # مقدارِ تازه‌ی این کلید هماهنگ می‌کنه؛ برای اثرِ فوری از
+        # `.منشی زمان‌بندی روشن/خاموش` استفاده کن.
+        assistant_state["schedule_enabled"] = enabled
         await save_assistant()
     elif key == "autopost_enabled":
         autopost_state["enabled"] = enabled

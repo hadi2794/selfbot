@@ -1,15 +1,44 @@
-"""۸) منشی چت: پاسخ خودکار هوشمند با تشخیص آنلاین/آفلاین"""
+"""۸) منشی چت: پاسخِ خودکارِ هوشمند با تشخیصِ ترکیبیِ آنلاین/آفلاین
+
+تشخیصِ «آفلاین‌بودن» (که تعیین می‌کنه منشی خودش کِی روشن/خاموش بشه) از دو
+سیگنالِ کاملاً محلی (بدونِ هیچ تماسی با تلگرام) تشکیل شده - نگاهِ کاملِ
+منطق پایینِ فایل، تابعِ _recompute_enabled_from_signals:
+
+  ۱) زمان‌بندی: پنجره‌های ثابتِ ساعتی که خودت تعریف می‌کنی (مثلاً خواب:
+     ۲۳:۰۰ تا ۰۸:۰۰). داخلِ این بازه‌ها، صرف‌نظر از فعالیتِ اخیرت، منشی
+     همیشه روشنه - چون این یعنی «قطعاً در دسترس نیستم»، حتی اگه یه لحظه
+     گوشیت رو چک کنی یا جواب بدی.
+  ۲) فعالیت: اگه الان توی هیچ پنجره‌ی زمان‌بندی‌شده‌ای نباشیم، به همون روشِ
+     قبلی برمی‌گردیم - آخرین باری که از هر دستگاهی یه پیامِ خروجیِ واقعی
+     فرستادی. بعدِ ASSISTANT_ONLINE_THRESHOLD ثانیه سکوت، آفلاین حساب
+     می‌شی و منشی روشن می‌شه.
+
+یعنی زمان‌بندی یه لایه‌ی «حتماً روشن» روی همون تشخیصِ رفتاریِ قبلیه، نه یه
+حالتِ جایگزین: اگه هیچ پنجره‌ای تعریف نکنی، رفتار دقیقاً همون قبلیه. جزئیاتِ
+پنجره‌ها با `{PREFIX}منشی زمان‌بندی` مدیریت می‌شن.
+
+قفلِ دستی (`.منشی روشن`/`.منشی خاموش`) هنوز کاملاً بالادستِ هر دو سیگنالِ
+بالاست: وقتی auto_detect=False باشه، نه فعالیت نه زمان‌بندی هیچ‌کدوم دست به
+enabled نمی‌زنن.
+"""
 import asyncio
 import logging
+import re
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from telethon import events
 
 from .. import ai, config, runtime
 from ..config import PREFIX
 from ..runtime import client
-from ..storage.assistant_store import assistant_state, save_assistant
+from ..storage.assistant_store import (
+    add_schedule_window,
+    assistant_state,
+    clear_schedule_windows,
+    remove_schedule_window,
+    save_assistant,
+)
 from ..storage.stats_store import record_error as _record_error
 from ..utils import pat
 from . import audio
@@ -98,21 +127,104 @@ _ASSISTANT_MODE_ALIASES = {
 }
 
 
+# ---------------------------------------------------------- زمان‌بندی ---
+# پنجره‌ها با دقیقه‌ی «از نیمه‌شب» (۰ تا ۱۴۳۹) ذخیره/محاسبه می‌شن، نه
+# datetime.time یا timezone واقعی - چون تنها چیزی که لازم داریم مقایسه‌ی
+# «الان کجای شبانه‌روزم» با یه بازه‌ست، و این کار با عددهای ساده هم دقیق‌تره
+# هم از دردسرِ DST/timezone-aware در امان می‌مونه. زمانِ محلی هم دقیقاً با
+# همون الگویی که scheduler.py/daily_digest.py استفاده می‌کنن حساب می‌شه
+# (config.TIMEZONE_OFFSET، پیش‌فرض تهران) - نه چیزِ جدیدی، فقط همون قرارداد.
+_CLOCK_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+def _local_now() -> datetime:
+    return datetime.utcnow() + timedelta(hours=config.TIMEZONE_OFFSET)
+
+
+def _minute_of_day(moment: datetime) -> int:
+    return moment.hour * 60 + moment.minute
+
+
+def _parse_clock(raw: str) -> int | None:
+    """ورودیِ «HH:MM» رو به دقیقه‌ی از نیمه‌شب تبدیل می‌کنه؛ نامعتبر بود -> None."""
+    m = _CLOCK_RE.match(raw.strip())
+    if not m:
+        return None
+    hh, mm = int(m.group(1)), int(m.group(2))
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        return None
+    return hh * 60 + mm
+
+
+def _format_clock(minute: int) -> str:
+    return f"{minute // 60:02d}:{minute % 60:02d}"
+
+
+def _window_contains(start_minute: int, end_minute: int, minute: int) -> bool:
+    """
+    آیا `minute` (دقیقه‌ی از نیمه‌شب) داخلِ بازه‌ی [start_minute, end_minute]
+    هست؟ هر دو سرِ بازه inclusive-ان. اگه end_minute از start_minute کمتر
+    باشه یعنی بازه از نیمه‌شب رد می‌شه (مثلاً ۲۳:۰۰ تا ۰۸:۰۰ -> start=1380,
+    end=480؛ یعنی از ۲۳:۰۰ شب تا ۰۸:۰۰ صبحِ روزِ بعد).
+    """
+    if start_minute <= end_minute:
+        return start_minute <= minute <= end_minute
+    return minute >= start_minute or minute <= end_minute
+
+
+def _active_schedule_window(minute: int) -> dict | None:
+    """اولین پنجره‌ای که الان توش هستیم (اگه لایه‌ی زمان‌بندی فعال باشه)، وگرنه None."""
+    if not assistant_state["schedule_enabled"]:
+        return None
+    for window in assistant_state["schedule_windows"]:
+        if _window_contains(window["start_minute"], window["end_minute"], minute):
+            return window
+    return None
+
+
+def _current_signal_reason() -> tuple[str, dict | None]:
+    """
+    فقط برای تصمیم‌گیری/نمایش - خودش چیزی رو تغییر نمی‌ده. اگه الان داخلِ یه
+    پنجره‌ی زمان‌بندی‌شده‌ایم ("schedule", window)، وگرنه ("activity", None)
+    یعنی تصمیم بر اساسِ همون تایمرِ سکوت/فعالیتِ قبلیه.
+    """
+    window = _active_schedule_window(_minute_of_day(_local_now()))
+    if window is not None:
+        return "schedule", window
+    return "activity", None
+
+
 def _assistant_status_text():
     status = "روشن ✅" if assistant_state["enabled"] else "خاموش ❌"
     mode_fa = _ASSISTANT_MODE_FA.get(assistant_state["mode"], assistant_state["mode"])
     if assistant_state["auto_detect"]:
-        control_line = (
-            f"خودکار (بر اساسِ آخرین باری که از هر دستگاهی برات پیامِ واقعی فرستادی؛ "
-            f"بعدِ {config.ASSISTANT_ONLINE_THRESHOLD} ثانیه سکوت، خودش روشن می‌شه)"
-        )
+        kind, window = _current_signal_reason()
+        if kind == "schedule":
+            reason_text = (
+                f"الان به‌خاطرِ بازه‌ی زمان‌بندیِ «{window['label'] or 'بدون‌برچسب'}» "
+                f"({_format_clock(window['start_minute'])}–{_format_clock(window['end_minute'])}) روشنه"
+            )
+        else:
+            reason_text = (
+                f"بر اساسِ آخرین باری که از هر دستگاهی برات پیامِ واقعی فرستادی؛ "
+                f"بعدِ {config.ASSISTANT_ONLINE_THRESHOLD} ثانیه سکوت، خودش روشن می‌شه"
+            )
+        control_line = f"خودکار ({reason_text})"
         footer = (
             f"با `{PREFIX}منشی روشن` یا `{PREFIX}منشی خاموش` می‌تونی دستی قفلش کنی "
-            "(از اون به بعد حتی اگه آنلاین/آفلاین بشی، تشخیص خودکار دیگه دست بهش نمی‌زنه)."
+            "(از اون به بعد حتی اگه آنلاین/آفلاین بشی یا داخلِ بازه‌ی زمان‌بندی باشی، تشخیص خودکار دیگه دست بهش نمی‌زنه)."
         )
     else:
-        control_line = "دستی 🔒 (قفل‌شده - تشخیص آنلاین/آفلاین روش تاثیری نداره)"
+        control_line = "دستی 🔒 (قفل‌شده - نه فعالیت نه زمان‌بندی روش تاثیری نداره)"
         footer = f"برای برگردوندن به تشخیص خودکار: `{PREFIX}منشی خودکار`"
+
+    windows = assistant_state["schedule_windows"]
+    if not windows:
+        schedule_summary = "تعریف نشده"
+    else:
+        layer = "فعال ✅" if assistant_state["schedule_enabled"] else "غیرفعال ❌ (موقتاً خاموش)"
+        schedule_summary = f"{len(windows)} بازه، {layer}"
+
     return (
         "🤖 **منشی چت**\n\n"
         f"• وضعیت: {status}\n"
@@ -125,10 +237,47 @@ def _assistant_status_text():
         f"• حافظه‌ی مکالمه: "
         f"{f'تا {config.ASSISTANT_HISTORY_LIMIT} پیامِ آخرِ هر مکالمه ({len(_conv_history)} مکالمه فعال)' if config.ASSISTANT_HISTORY_LIMIT > 0 else 'خاموش'}\n"
         f"• متن ثابت (fallback): {assistant_state['text'] or '(تنظیم نشده)'}\n"
+        f"• زمان‌بندی: {schedule_summary} (جزئیات: `{PREFIX}منشی زمان‌بندی`)\n"
         f"• چت‌های مستثنی: {len(assistant_state['exclude'])}\n"
         f"• چت‌های همیشه‌فعال: {len(assistant_state['include'])}\n\n"
         f"{footer}"
     )
+
+
+def _schedule_status_text() -> str:
+    windows = assistant_state["schedule_windows"]
+    header = "🗓 **زمان‌بندیِ منشیِ خودکار**\n\n"
+    layer_state = (
+        "فعال ✅" if assistant_state["schedule_enabled"]
+        else "غیرفعال ❌ (بازه‌ها حذف نشدن، فقط موقتاً بی‌اثرن)"
+    )
+    state_line = f"وضعیتِ لایه: {layer_state}\n\n"
+
+    if not windows:
+        body = (
+            "هیچ بازه‌ای تعریف نشده - یعنی منشیِ خودکار فقط بر اساسِ فعالیتِ اخیرت تصمیم می‌گیره.\n\n"
+            f"افزودن: `{PREFIX}منشی زمان‌بندی افزودن 23:00 08:00 خواب`\n"
+            "(یعنی از ۲۳:۰۰ تا ۰۸:۰۰، صرف‌نظر از فعالیتِ اخیرت، منشی روشن می‌مونه)"
+        )
+        return header + state_line + body
+
+    now_minute = _minute_of_day(_local_now())
+    lines = []
+    for i, w in enumerate(windows, start=1):
+        active = assistant_state["schedule_enabled"] and _window_contains(
+            w["start_minute"], w["end_minute"], now_minute
+        )
+        mark = " ← الان فعال" if active else ""
+        label = w["label"] or "بدون‌برچسب"
+        lines.append(f"{i}. {label}: {_format_clock(w['start_minute'])}–{_format_clock(w['end_minute'])}{mark}")
+
+    footer = (
+        f"\n\nافزودنِ بازه‌ی دیگه: `{PREFIX}منشی زمان‌بندی افزودن HH:MM HH:MM [برچسب]`\n"
+        f"حذفِ یکی: `{PREFIX}منشی زمان‌بندی حذف <شماره>`\n"
+        f"پاک‌کردنِ همه: `{PREFIX}منشی زمان‌بندی پاک`\n"
+        f"روشن/خاموشِ کلِ این لایه: `{PREFIX}منشی زمان‌بندی روشن` / `{PREFIX}منشی زمان‌بندی خاموش`"
+    )
+    return header + state_line + "\n".join(lines) + footer
 
 
 def _assistant_should_respond(event):
@@ -180,14 +329,85 @@ async def assistant_handler(event):
         assistant_state["auto_detect"] = True
         # به‌جای صبرکردن تا دورِ بعدیِ assistant_status_watcher (تا
         # ASSISTANT_CHECK_INTERVAL ثانیه)، همین الان یه‌بار enabled رو از
-        # روی آخرین فعالیتِ ثبت‌شده بازمحاسبه می‌کنیم (محلیه، خطا نمی‌ده).
-        _recompute_enabled_from_activity()
+        # روی فعالیت/زمان‌بندی بازمحاسبه می‌کنیم (کاملاً محلیه، خطا نمی‌ده).
+        _recompute_enabled_from_signals()
         await save_assistant()
         return await event.edit(
             "✅ تشخیص خودکار آنلاین/آفلاین دوباره فعال شد.\n"
-            "از این به بعد روشن/خاموش‌بودن منشی خودش بر اساس آنلاین/آفلاین‌بودنت مدیریت می‌شه.\n\n"
+            "از این به بعد روشن/خاموش‌بودن منشی خودش بر اساسِ آنلاین/آفلاین‌بودنت و بازه‌های زمان‌بندی‌شده مدیریت می‌شه.\n\n"
             + _assistant_status_text()
         )
+
+    if sub in ("زمانبندی", "زمان‌بندی", "schedule"):
+        args = rest.split(maxsplit=1)
+        action = args[0].lower() if args else ""
+        tail = args[1] if len(args) > 1 else ""
+
+        if not action or action in ("وضعیت", "status", "لیست", "list"):
+            return await event.edit(_schedule_status_text())
+
+        if action in ("افزودن", "add"):
+            parts2 = tail.split(maxsplit=2)
+            if len(parts2) < 2:
+                return await event.edit(f"مثال: `{PREFIX}منشی زمان‌بندی افزودن 23:00 08:00 خواب`")
+            start = _parse_clock(parts2[0])
+            end = _parse_clock(parts2[1])
+            if start is None or end is None:
+                return await event.edit("⛔ فرمتِ ساعت نامعتبره؛ باید HH:MM باشه (مثلاً 23:00).")
+            if start == end:
+                return await event.edit("⛔ ساعتِ شروع و پایان نمی‌تونن یکی باشن.")
+            if len(assistant_state["schedule_windows"]) >= config.ASSISTANT_SCHEDULE_MAX_WINDOWS:
+                return await event.edit(
+                    f"⛔ سقفِ تعدادِ بازه‌ها ({config.ASSISTANT_SCHEDULE_MAX_WINDOWS} تا) پره؛ "
+                    f"یکی رو حذف کن (`{PREFIX}منشی زمان‌بندی حذف <شماره>`) یا اول پاکشون کن."
+                )
+            label = parts2[2].strip() if len(parts2) > 2 else ""
+            await add_schedule_window(label, start, end)
+            if assistant_state["auto_detect"]:
+                _recompute_enabled_from_signals()
+            span = f"{_format_clock(start)}–{_format_clock(end)}"
+            return await event.edit(
+                f"✅ بازه‌ی «{label or 'بدون‌برچسب'}» ({span}) اضافه شد.\n\n" + _schedule_status_text()
+            )
+
+        if action in ("حذف", "remove", "delete"):
+            if not tail.strip().isdigit():
+                return await event.edit(
+                    f"مثال: `{PREFIX}منشی زمان‌بندی حذف 1` (شماره رو از `{PREFIX}منشی زمان‌بندی` ببین)"
+                )
+            idx = int(tail.strip())
+            windows = assistant_state["schedule_windows"]
+            if not (1 <= idx <= len(windows)):
+                return await event.edit("⛔ همچین شماره‌ای توی لیست نیست.")
+            target = windows[idx - 1]
+            await remove_schedule_window(target["id"])
+            if assistant_state["auto_detect"]:
+                _recompute_enabled_from_signals()
+            return await event.edit(
+                f"🗑 بازه‌ی «{target['label'] or 'بدون‌برچسب'}» حذف شد.\n\n" + _schedule_status_text()
+            )
+
+        if action in ("پاک", "clear"):
+            n = await clear_schedule_windows()
+            if assistant_state["auto_detect"]:
+                _recompute_enabled_from_signals()
+            return await event.edit(f"🗑 {n} بازه پاک شد." if n else "لیستِ بازه‌ها از قبل هم خالی بود.")
+
+        if action in ("روشن", "on"):
+            assistant_state["schedule_enabled"] = True
+            if assistant_state["auto_detect"]:
+                _recompute_enabled_from_signals()
+            await save_assistant()
+            return await event.edit("✅ لایه‌ی زمان‌بندی فعال شد.\n\n" + _schedule_status_text())
+
+        if action in ("خاموش", "off"):
+            assistant_state["schedule_enabled"] = False
+            if assistant_state["auto_detect"]:
+                _recompute_enabled_from_signals()
+            await save_assistant()
+            return await event.edit("❌ لایه‌ی زمان‌بندی غیرفعال شد (بازه‌ها حذف نشدن، فقط موقتاً بی‌اثرن).")
+
+        return await event.edit(f"دستور نامعتبره. راهنما: `{PREFIX}منشی زمان‌بندی`")
 
     if sub in ("متن", "text"):
         text = rest
@@ -373,9 +593,9 @@ async def assistant_self_activity_watcher(event):
     هر پیامِ خروجیِ واقعی (چه از همین اسکریپت، چه از گوشی/دسکتاپت - چون
     تلگرام پیام‌های خروجیِ خودت رو بینِ همه‌ی سشن‌های اکانت sync می‌کنه و این
     هندلر هم دقیقاً همون آپدیت رو می‌بینه) رو به‌عنوانِ «الان پشتِ اکانتم» در
-    نظر می‌گیره. این تنها منبعِ تشخیصِ آنلاین/آفلاینه - نگاهِ بالای فایل
-    (کنارِ تعریفِ _last_self_activity) برای این‌که چرا این روش جایگزینِ
-    روشِ قبلی (پرسیدنِ لیستِ سشن‌ها از تلگرام) شد.
+    نظر می‌گیره. این تنها منبعِ سیگنالِ فعالیتِ تشخیصِ آنلاین/آفلاینه - نگاهِ
+    بالای فایل (کنارِ تعریفِ _last_self_activity) برای این‌که چرا این روش
+    جایگزینِ روشِ قبلی (پرسیدنِ لیستِ سشن‌ها از تلگرام) شد.
     """
     global _last_self_activity
 
@@ -388,28 +608,45 @@ async def assistant_self_activity_watcher(event):
         # این یه دستورِ کنترلیِ خودِ سلف‌بات (مثلِ `.منشی خودکار` یا حتی صرفِ
         # چک‌کردنِ وضعیت با `.منشی`) - نه یه پیامِ واقعی به یه نفر. اگه این‌ها
         # رو هم «فعالیت» حساب می‌کردیم، هر بار که برای عوض‌کردنِ حالت یا چک‌کردنِ
-        # وضعیت تایپ می‌کردید، تایمرِ ۳-دقیقه‌ای (ASSISTANT_ONLINE_THRESHOLD)
+        # وضعیت تایپ می‌کردید، تایمرِ سکوت (ASSISTANT_ONLINE_THRESHOLD)
         # ریست می‌شد - و دقیقاً همین باعث می‌شد بعدِ برگردوندن به حالتِ خودکار،
         # منشی تا ابد روشن نشه (چون هر چک‌کردنِ وضعیت، خودش دوباره تایمر رو
         # ریست می‌کرد). دستورهای کنترلی نباید نشونه‌ی «الان دارم چت می‌کنم» باشن.
         return
 
     _last_self_activity = datetime.now(timezone.utc)
-    if assistant_state["auto_detect"] and assistant_state["enabled"]:
-        assistant_state["enabled"] = False
+    if assistant_state["auto_detect"]:
+        # قبلاً اینجا مستقیم `assistant_state["enabled"] = False` می‌شد (چون
+        # فرستادنِ یه پیامِ واقعی یعنی «آنلاینم»). ولی این فرض دیگه همیشه
+        # درست نیست: اگه الان داخلِ یه بازه‌ی زمان‌بندی‌شده باشیم (مثلاً
+        # ساعتِ ۲ نصفِ‌شب یه پیام بفرستی درحالی‌که بازه‌ی «خواب» تعریف کردی)،
+        # منشی باید همچنان روشن بمونه. به‌جای یه شرطِ جداگانه، از همون تابعِ
+        # مشترکِ تصمیم‌گیری (_recompute_enabled_from_signals) استفاده می‌کنیم
+        # تا این استثنا فقط یه‌جا (نه اینجا و هم توی خودِ تابع) پیاده بشه.
+        _recompute_enabled_from_signals()
 
 
-def _recompute_enabled_from_activity() -> None:
+def _recompute_enabled_from_signals() -> None:
     """
-    فقط بر اساسِ زمانِ محلی: اگه توی ASSISTANT_ONLINE_THRESHOLD ثانیه‌ی
-    اخیر، خودت (از هر دستگاهی) یه پیامِ واقعی فرستاده باشی -> آنلاینی -> منشی
-    خاموش. وگرنه -> آفلاینی -> منشی روشن. کاملاً محلی و همگام (sync) هست؛
-    هیچ درخواستی به تلگرام نمی‌زنه، پس هیچ‌وقت نمی‌تونه خطا یا FloodWait بده.
-    """
-    seconds_since_self = (datetime.now(timezone.utc) - _last_self_activity).total_seconds()
-    online = seconds_since_self < config.ASSISTANT_ONLINE_THRESHOLD
+    فقط وقتی auto_detect=True صدا زده می‌شه (نه موقعِ قفلِ دستی). دو سیگنالِ
+    کاملاً محلی رو ترکیب می‌کنه - نگاهِ کاملِ توضیح توی docstringِ بالای فایل:
 
-    new_enabled = not online
+      ۱) اگه الان داخلِ یه بازه‌ی زمان‌بندی‌شده باشیم -> همیشه روشن، صرف‌نظر
+         از فعالیتِ اخیر.
+      ۲) وگرنه -> بر اساسِ همون تایمرِ سکوت/فعالیتِ قبلی تصمیم می‌گیریم.
+
+    هیچ درخواستی به تلگرام نمی‌زنه (نه برای زمان‌بندی، نه برای فعالیت)، پس
+    هیچ‌وقت نمی‌تونه خطا یا FloodWait بده - همون ویژگیِ حیاتی‌ای که باعثِ
+    جایگزینیِ روشِ قبلیِ «پرسیدنِ سشن‌ها از تلگرام» شده بود، اینجا هم حفظ می‌شه.
+    """
+    kind, _window = _current_signal_reason()
+    if kind == "schedule":
+        new_enabled = True
+    else:
+        seconds_since_self = (datetime.now(timezone.utc) - _last_self_activity).total_seconds()
+        online = seconds_since_self < config.ASSISTANT_ONLINE_THRESHOLD
+        new_enabled = not online
+
     if new_enabled != assistant_state["enabled"]:
         if new_enabled:
             assistant_state["replied"] = set()  # نشست تازه = دوباره به همه جواب بده
@@ -419,8 +656,9 @@ def _recompute_enabled_from_activity() -> None:
 async def assistant_status_watcher():
     """
     هر چند ثانیه یک‌بار (ASSISTANT_CHECK_INTERVAL) وضعیتِ enabled رو بر
-    اساسِ آخرین «فعالیتِ خودم» (که assistant_self_activity_watcher بالا،
-    بدونِ تاخیر و برای هر دستگاهی ثبتش می‌کنه) بازبینی می‌کنه.
+    اساسِ زمان‌بندی + آخرین «فعالیتِ خودم» (که assistant_self_activity_watcher
+    بالا، بدونِ تاخیر و برای هر دستگاهی ثبتش می‌کنه) بازبینی می‌کنه - نگاهِ
+    _recompute_enabled_from_signals برای منطقِ کامل.
 
     نسخه‌ی قبلیِ این تابع هر بار با GetAuthorizationsRequest از تلگرام
     لیستِ سشن‌های فعال رو می‌گرفت - که مشکل داشت: این متد برای پرسوجوی
@@ -428,16 +666,17 @@ async def assistant_status_watcher():
     ریت‌لیمیت می‌شد؛ و چون اون خطا هر بار توسطِ همین حلقه catch و نادیده
     گرفته می‌شد، enabled دیگه هیچ‌وقت دوباره محاسبه نمی‌شد و منشی برای همیشه
     روی حالتِ خاموش گیر می‌کرد - دقیقاً همون باگی که این نسخه حلش می‌کنه.
-    الان هیچ درخواستی به تلگرام زده نمی‌شه؛ تشخیص فقط بر اساسِ همون سیگنالِ
-    آنیِ assistant_self_activity_watcher (پیام‌های خروجیِ واقعی، از هر
-    دستگاهی) انجام می‌شه، که نه ریت‌لیمیت می‌شه و نه اصلاً می‌تونه خطا بده.
+    الان هیچ درخواستی به تلگرام زده نمی‌شه؛ تشخیص فقط بر اساسِ سیگنال‌های
+    کاملاً محلیِ بالا انجام می‌شه، که نه ریت‌لیمیت می‌شن و نه اصلاً می‌تونن
+    خطا بدن.
 
     اگه با `.منشی روشن` یا `.منشی خاموش` دستی قفلش کرده باشی (auto_detect
-    خاموش)، این تابع اصلاً دست به enabled نمی‌زنه - حتی اگه آفلاین بشی.
+    خاموش)، این تابع اصلاً دست به enabled نمی‌زنه - حتی اگه آفلاین بشی یا
+    داخلِ یه بازه‌ی زمان‌بندی‌شده باشی.
     """
     from .. import health
     while True:
         if assistant_state["auto_detect"]:
-            _recompute_enabled_from_activity()
+            _recompute_enabled_from_signals()
         health.update_worker_status("assistant", "ok")
         await asyncio.sleep(config.ASSISTANT_CHECK_INTERVAL)

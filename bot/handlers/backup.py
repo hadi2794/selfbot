@@ -17,7 +17,12 @@ from ..storage.autopost_store import (
     add_autopost_chat,
     clear_autopost_chats,
 )
-from ..storage.assistant_store import assistant_state, save_assistant
+from ..storage.assistant_store import (
+    add_schedule_window,
+    assistant_state,
+    clear_schedule_windows,
+    save_assistant,
+)
 from ..storage.font_store import font_state, save_font_state
 from ..storage.group_guard_store import (
     group_guard_state,
@@ -41,7 +46,7 @@ async def _gather_config_snapshot():
     """
     return {
         "_kind": "selfbot_config_backup",
-        "_version": 2,
+        "_version": 3,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "notes": await load_notes(),
         "autopost": dict(autopost_state),
@@ -54,6 +59,15 @@ async def _gather_config_snapshot():
             "auto_detect": assistant_state["auto_detect"],
             "manual_enabled": assistant_state["enabled"] if not assistant_state["auto_detect"] else False,
             "ai_mode": assistant_state["ai_mode"],
+            "schedule_enabled": assistant_state["schedule_enabled"],
+            "schedule_windows": [
+                {
+                    "label": w["label"],
+                    "start_minute": w["start_minute"],
+                    "end_minute": w["end_minute"],
+                }
+                for w in assistant_state["schedule_windows"]
+            ],
         },
         "font": dict(font_state),
         "clock": {
@@ -107,9 +121,18 @@ async def _apply_config_snapshot(data):
         assistant_state["exclude"] = set(a.get("exclude", []))
         assistant_state["auto_detect"] = a.get("auto_detect", assistant_state["auto_detect"])
         assistant_state["ai_mode"] = a.get("ai_mode", assistant_state["ai_mode"])
+        assistant_state["schedule_enabled"] = a.get("schedule_enabled", assistant_state["schedule_enabled"])
         if not assistant_state["auto_detect"]:
             assistant_state["enabled"] = a.get("manual_enabled", False)
         await save_assistant()
+        windows = a.get("schedule_windows")
+        if isinstance(windows, list):
+            await clear_schedule_windows()
+            for w in windows:
+                if isinstance(w, dict) and "start_minute" in w and "end_minute" in w:
+                    await add_schedule_window(
+                        str(w.get("label", "")), int(w["start_minute"]), int(w["end_minute"])
+                    )
         applied.append("منشی")
 
     if isinstance(data.get("font"), dict):

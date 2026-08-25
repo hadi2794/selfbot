@@ -6,6 +6,13 @@ Handlerها و تسکِ پس‌زمینه (assistant_status_watcher) مستقی�
 رفرنس دارن؛ فقط منبع ذخیره‌سازیِ دائمی از فایل JSON به PostgreSQL عوض شده.
 init_assistant_state() باید موقع استارتاپِ پروسه (bot/db/bootstrap.py) صدا
 زده بشه تا این دیکشنری با آخرین وضعیتِ ذخیره‌شده در دیتابیس پر بشه.
+
+«زمان‌بندی» (پنجره‌های ثابتِ ساعتی مثلِ خواب/کاری - نگاهِ کاملِ منطق توی
+bot/handlers/assistant.py) جدا از تنظیماتِ singleton مدیریت می‌شه، چون خودش
+یه جدولِ چندردیفیه (AssistantScheduleWindow)، نه یه فیلدِ ساده؛ به همین خاطر
+save_assistant() فقط schedule_enabled (روشن/خاموشِ کلِ لایه) رو ذخیره می‌کنه
+و افزودن/حذفِ خودِ پنجره‌ها از توابعِ جداگانه‌ی پایینِ همین فایل انجام می‌شه که
+بلافاصله هم DB و هم assistant_state["schedule_windows"] رو به‌روز می‌کنن.
 """
 from ..repositories import assistant_repo
 
@@ -18,6 +25,7 @@ _DEFAULT = {
     "auto_detect": True,  # اگه False باشه، یعنی کاربر دستی قفلش کرده و تشخیص خودکار دست بهش نمی‌زنه
     "manual_enabled": False,  # فقط وقتی auto_detect=False معتبره
     "ai_mode": False,  # اگه True باشه، پاسخِ خودکار به‌جای متنِ ثابت با هوش مصنوعی تولید می‌شه
+    "schedule_enabled": True,  # روشن/خاموشِ کلِ لایه‌ی زمان‌بندی (بدونِ پاک‌کردنِ پنجره‌ها)
 }
 
 
@@ -33,6 +41,8 @@ def _build_initial_state(loaded: dict) -> dict:
         "include": set(loaded["include"]),
         "exclude": set(loaded["exclude"]),
         "ai_mode": loaded["ai_mode"],
+        "schedule_enabled": loaded["schedule_enabled"],
+        "schedule_windows": loaded.get("schedule_windows", []),  # لیستِ dict های {id,label,start_minute,end_minute}
         "replied": set(),  # (chat_id, sender_id) که توی این نشست جواب گرفتن
     }
 
@@ -47,6 +57,7 @@ async def init_assistant_state() -> None:
     """موقع بالا اومدنِ پروسه صدا زده می‌شه: state رو از PostgreSQL می‌خونه و IN-PLACE پر می‌کنه."""
     settings = await assistant_repo.get_settings()
     rules = await assistant_repo.list_chat_rules()
+    windows = await assistant_repo.list_schedule_windows()
     loaded = dict(_DEFAULT)
     loaded.update(
         {
@@ -56,6 +67,8 @@ async def init_assistant_state() -> None:
             "auto_detect": settings.auto_detect,
             "manual_enabled": settings.manual_enabled,
             "ai_mode": settings.ai_mode,
+            "schedule_enabled": settings.schedule_enabled,
+            "schedule_windows": windows,
             "include": [cid for cid, rule in rules.items() if rule == "include"],
             "exclude": [cid for cid, rule in rules.items() if rule == "exclude"],
         }
@@ -73,8 +86,30 @@ async def save_assistant() -> None:
         auto_detect=assistant_state["auto_detect"],
         manual_enabled=assistant_state["enabled"] if not assistant_state["auto_detect"] else False,
         ai_mode=assistant_state["ai_mode"],
+        schedule_enabled=assistant_state["schedule_enabled"],
     )
     await assistant_repo.replace_chat_rules(
         include=assistant_state["include"],
         exclude=assistant_state["exclude"],
     )
+
+
+async def add_schedule_window(label: str, start_minute: int, end_minute: int) -> dict:
+    """پنجره‌ی جدید رو در DB ذخیره می‌کنه، لیستِ درون‌حافظه‌ای رو رفرش می‌کنه و خودِ پنجره‌ی تازه رو برمی‌گردونه."""
+    new_id = await assistant_repo.add_schedule_window(label, start_minute, end_minute)
+    assistant_state["schedule_windows"] = await assistant_repo.list_schedule_windows()
+    return next(w for w in assistant_state["schedule_windows"] if w["id"] == new_id)
+
+
+async def remove_schedule_window(window_id: int) -> bool:
+    """یه پنجره رو حذف می‌کنه و لیستِ درون‌حافظه‌ای رو رفرش می‌کنه."""
+    ok = await assistant_repo.delete_schedule_window(window_id)
+    assistant_state["schedule_windows"] = await assistant_repo.list_schedule_windows()
+    return ok
+
+
+async def clear_schedule_windows() -> int:
+    """همه‌ی پنجره‌ها رو پاک می‌کنه و لیستِ درون‌حافظه‌ای رو خالی می‌کنه."""
+    n = await assistant_repo.clear_schedule_windows()
+    assistant_state["schedule_windows"] = []
+    return n

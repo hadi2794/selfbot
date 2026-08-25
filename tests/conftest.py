@@ -61,6 +61,7 @@ async def _clean_tables():
             for model in (
                 models.Note,
                 models.AssistantChatRule,
+                models.AssistantScheduleWindow,
                 models.AutopostChat,
                 models.StatsCommandCount,
                 models.StatsChatCount,
