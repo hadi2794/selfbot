@@ -47,8 +47,8 @@ ASSISTANT_FILE = os.getenv("ASSISTANT_FILE", "assistant.json")
 FONT_STATE_FILE = os.getenv("FONT_STATE_FILE", "font_state.json")
 STATS_FILE = os.getenv("STATS_FILE", "stats.json")
 
-ASSISTANT_ONLINE_THRESHOLD = int(os.getenv("ASSISTANT_ONLINE_THRESHOLD", "180"))  # ثانیه
-ASSISTANT_CHECK_INTERVAL = max(int(os.getenv("ASSISTANT_CHECK_INTERVAL", "30")), 15)
+ASSISTANT_ONLINE_THRESHOLD = int(os.getenv("ASSISTANT_ONLINE_THRESHOLD", "180"))  # ثانیه سکوت تا «آفلاین» حساب بشی
+ASSISTANT_CHECK_INTERVAL = max(int(os.getenv("ASSISTANT_CHECK_INTERVAL", "30")), 15)  # هر چند ثانیه یک‌بار بازبینیِ محلی (بدون تماس با تلگرام)
 
 STATS_SAVE_INTERVAL = 60  # هر چند ثانیه آمار توی PostgreSQL ذخیره بشه
 

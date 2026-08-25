@@ -4,7 +4,7 @@ import logging
 from collections import deque
 from datetime import datetime, timezone
 
-from telethon import events, functions
+from telethon import events
 
 from .. import ai, config, runtime
 from ..config import PREFIX
@@ -16,11 +16,13 @@ from . import audio
 
 logger = logging.getLogger("selfbot.handlers.assistant")
 
-# آخرین باری که یه پیامِ خروجیِ واقعی (از هر دستگاهی، نه فقط همین اسکریپت)
-# دیده شده - برای تشخیصِ آنیِ «الان پشتِ اکانتم»، به‌جای صبر کردن تا چکِ
-# دوره‌ایِ assistant_status_watcher (که هر ASSISTANT_CHECK_INTERVAL ثانیه
-# اجرا می‌شه و به date_active سمتِ سرورِ تلگرام هم متکیه که همیشه آنی
-# آپدیت نمی‌شه).
+# آخرین باری که یه پیامِ خروجیِ واقعی (از هر دستگاهی، نه فقط همین اسکریپت -
+# چون تلگرام پیام‌های خروجیِ خودت رو بینِ همه‌ی سشن‌های اکانت sync می‌کنه)
+# دیده شده. این تنها منبعِ تشخیصِ آنلاین/آفلاینِ این فایله (نه سؤال‌کردن از
+# تلگرام «سشن‌های دیگه‌م الان چی‌ان» - اون روش قبلاً امتحان شد و چون
+# account.getAuthorizations برای پرسوجوی مکرر و همیشگی طراحی نشده، دیر یا
+# زود با FloodWaitError ریت‌لیمیت می‌شد و enabled برای همیشه گیر می‌کرد؛
+# نگاهِ کاملِ ماجرا توی داکیومنتِ assistant_status_watcher پایینِ فایل).
 _last_self_activity = datetime.min.replace(tzinfo=timezone.utc)
 
 # شمارنده‌ی «همین الان دارم توی این چت auto-reply می‌فرستم» (chat_id -> تعداد
@@ -100,7 +102,10 @@ def _assistant_status_text():
     status = "روشن ✅" if assistant_state["enabled"] else "خاموش ❌"
     mode_fa = _ASSISTANT_MODE_FA.get(assistant_state["mode"], assistant_state["mode"])
     if assistant_state["auto_detect"]:
-        control_line = f"خودکار (بر اساس آنلاین/آفلاین‌بودنت، هر {config.ASSISTANT_CHECK_INTERVAL} ثانیه چک می‌شه)"
+        control_line = (
+            f"خودکار (بر اساسِ آخرین باری که از هر دستگاهی برات پیامِ واقعی فرستادی؛ "
+            f"بعدِ {config.ASSISTANT_ONLINE_THRESHOLD} ثانیه سکوت، خودش روشن می‌شه)"
+        )
         footer = (
             f"با `{PREFIX}منشی روشن` یا `{PREFIX}منشی خاموش` می‌تونی دستی قفلش کنی "
             "(از اون به بعد حتی اگه آنلاین/آفلاین بشی، تشخیص خودکار دیگه دست بهش نمی‌زنه)."
@@ -174,13 +179,9 @@ async def assistant_handler(event):
     if sub in ("خودکار", "auto"):
         assistant_state["auto_detect"] = True
         # به‌جای صبرکردن تا دورِ بعدیِ assistant_status_watcher (تا
-        # ASSISTANT_CHECK_INTERVAL ثانیه)، همین الان یه‌بار وضعیتِ
-        # آنلاین/آفلاین رو چک می‌کنیم تا enabled بلافاصله درست بشه.
-        try:
-            await _recompute_enabled_from_online_status()
-        except Exception:
-            _record_error()
-            logger.exception("خطا در چکِ فوریِ وضعیتِ آنلاین/آفلاین بعدِ برگشت به حالتِ خودکار")
+        # ASSISTANT_CHECK_INTERVAL ثانیه)، همین الان یه‌بار enabled رو از
+        # روی آخرین فعالیتِ ثبت‌شده بازمحاسبه می‌کنیم (محلیه، خطا نمی‌ده).
+        _recompute_enabled_from_activity()
         await save_assistant()
         return await event.edit(
             "✅ تشخیص خودکار آنلاین/آفلاین دوباره فعال شد.\n"
@@ -369,14 +370,12 @@ async def assistant_autoreply(event):
 @client.on(events.NewMessage(outgoing=True))
 async def assistant_self_activity_watcher(event):
     """
-    هر پیامِ خروجیِ واقعی (چه یه دستورِ .منشی، چه یه پیامِ معمولی به یه نفر -
-    از هر کدوم از دستگاه‌هات، چون تلگرام پیام‌های خروجیِ خودت رو بینِ همه‌ی
-    سشن‌هات sync می‌کنه) رو به‌عنوانِ «الان پشتِ اکانتم» در نظر می‌گیره.
-
-    برخلافِ assistant_status_watcher که هر چند ثانیه یک‌بار poll می‌کنه و به
-    date_active سمتِ سرورِ تلگرام متکیه (که همیشه آنیِ‌آنی آپدیت نمی‌شه)، این
-    هندلر همون لحظه‌ی ارسالِ پیام صدا زده می‌شه - پس اگه تشخیصِ خودکار روشن
-    باشه، بدونِ هیچ تأخیری منشی رو خاموش می‌کنه.
+    هر پیامِ خروجیِ واقعی (چه از همین اسکریپت، چه از گوشی/دسکتاپت - چون
+    تلگرام پیام‌های خروجیِ خودت رو بینِ همه‌ی سشن‌های اکانت sync می‌کنه و این
+    هندلر هم دقیقاً همون آپدیت رو می‌بینه) رو به‌عنوانِ «الان پشتِ اکانتم» در
+    نظر می‌گیره. این تنها منبعِ تشخیصِ آنلاین/آفلاینه - نگاهِ بالای فایل
+    (کنارِ تعریفِ _last_self_activity) برای این‌که چرا این روش جایگزینِ
+    روشِ قبلی (پرسیدنِ لیستِ سشن‌ها از تلگرام) شد.
     """
     global _last_self_activity
 
@@ -400,27 +399,17 @@ async def assistant_self_activity_watcher(event):
         assistant_state["enabled"] = False
 
 
-async def _recompute_enabled_from_online_status() -> None:
+def _recompute_enabled_from_activity() -> None:
     """
-    یه‌بار وضعیتِ آنلاین/آفلاین رو چک می‌کنه و enabled رو بر همون اساس تنظیم
-    می‌کنه. هم توسطِ assistant_status_watcher (هر ASSISTANT_CHECK_INTERVAL
-    ثانیه) و هم مستقیم بعدِ `.منشی خودکار` صدا زده می‌شه - تا لازم نباشه بعدِ
-    برگشتن به حالتِ خودکار، تا ۳۰ ثانیه (یه دورِ کاملِ چک) صبر کرد.
+    فقط بر اساسِ زمانِ محلی: اگه توی ASSISTANT_ONLINE_THRESHOLD ثانیه‌ی
+    اخیر، خودت (از هر دستگاهی) یه پیامِ واقعی فرستاده باشی -> آنلاینی -> منشی
+    خاموش. وگرنه -> آفلاینی -> منشی روشن. کاملاً محلی و همگام (sync) هست؛
+    هیچ درخواستی به تلگرام نمی‌زنه، پس هیچ‌وقت نمی‌تونه خطا یا FloodWait بده.
     """
-    result = await client(functions.account.GetAuthorizationsRequest())
-    others = [a for a in result.authorizations if not a.current]
-    if others:
-        last_active = max(a.date_active for a in others)
-        seconds_since = (datetime.now(timezone.utc) - last_active).total_seconds()
-        online_elsewhere = seconds_since < config.ASSISTANT_ONLINE_THRESHOLD
-    else:
-        online_elsewhere = False  # هیچ سشن دیگه‌ای وصل نیست
-
     seconds_since_self = (datetime.now(timezone.utc) - _last_self_activity).total_seconds()
-    if seconds_since_self < config.ASSISTANT_ONLINE_THRESHOLD:
-        online_elsewhere = True
+    online = seconds_since_self < config.ASSISTANT_ONLINE_THRESHOLD
 
-    new_enabled = not online_elsewhere
+    new_enabled = not online
     if new_enabled != assistant_state["enabled"]:
         if new_enabled:
             assistant_state["replied"] = set()  # نشست تازه = دوباره به همه جواب بده
@@ -429,30 +418,26 @@ async def _recompute_enabled_from_online_status() -> None:
 
 async def assistant_status_watcher():
     """
-    هر چند ثانیه یک‌بار (ASSISTANT_CHECK_INTERVAL) لیست سشن‌های فعال اکانت رو
-    از تلگرام می‌گیره. اگه سشنی غیر از همین اسکریپت (مثلاً گوشی خودت) به‌تازگی
-    فعال بوده باشه، یعنی خودت آنلاینی -> منشی خاموش می‌شه. اگه هیچ سشن دیگه‌ای
-    به‌تازگی فعال نبوده -> یعنی آفلاینی -> منشی خودش روشن می‌شه.
+    هر چند ثانیه یک‌بار (ASSISTANT_CHECK_INTERVAL) وضعیتِ enabled رو بر
+    اساسِ آخرین «فعالیتِ خودم» (که assistant_self_activity_watcher بالا،
+    بدونِ تاخیر و برای هر دستگاهی ثبتش می‌کنه) بازبینی می‌کنه.
 
-    این چک همیشه با سیگنالِ آنیِ assistant_self_activity_watcher ترکیب می‌شه:
-    حتی اگه GetAuthorizationsRequest بگه «آفلاینی» (مثلاً چون date_active
-    سرور هنوز آپدیت نشده)، اگه به‌تازگی خودت یه پیامِ واقعی (نه یه دستورِ
-    کنترلی) فرستاده باشی، همچنان آنلاین حساب می‌شی.
+    نسخه‌ی قبلیِ این تابع هر بار با GetAuthorizationsRequest از تلگرام
+    لیستِ سشن‌های فعال رو می‌گرفت - که مشکل داشت: این متد برای پرسوجوی
+    مکرر (هر ۳۰ ثانیه، برای همیشه) طراحی نشده و دیر یا زود با FloodWaitError
+    ریت‌لیمیت می‌شد؛ و چون اون خطا هر بار توسطِ همین حلقه catch و نادیده
+    گرفته می‌شد، enabled دیگه هیچ‌وقت دوباره محاسبه نمی‌شد و منشی برای همیشه
+    روی حالتِ خاموش گیر می‌کرد - دقیقاً همون باگی که این نسخه حلش می‌کنه.
+    الان هیچ درخواستی به تلگرام زده نمی‌شه؛ تشخیص فقط بر اساسِ همون سیگنالِ
+    آنیِ assistant_self_activity_watcher (پیام‌های خروجیِ واقعی، از هر
+    دستگاهی) انجام می‌شه، که نه ریت‌لیمیت می‌شه و نه اصلاً می‌تونه خطا بده.
 
-    اگه با .assistant on یا .assistant off دستی قفلش کرده باشی (auto_detect
+    اگه با `.منشی روشن` یا `.منشی خاموش` دستی قفلش کرده باشی (auto_detect
     خاموش)، این تابع اصلاً دست به enabled نمی‌زنه - حتی اگه آفلاین بشی.
     """
     from .. import health
     while True:
-        if not assistant_state["auto_detect"]:
-            health.update_worker_status("assistant", "ok")
-            await asyncio.sleep(config.ASSISTANT_CHECK_INTERVAL)
-            continue
-        try:
-            await _recompute_enabled_from_online_status()
-            health.update_worker_status("assistant", "ok")
-        except Exception as e:
-            _record_error()
-            logger.exception("خطا در بررسی وضعیت آنلاین/آفلاین")
-            health.update_worker_status("assistant", "error", str(e))
+        if assistant_state["auto_detect"]:
+            _recompute_enabled_from_activity()
+        health.update_worker_status("assistant", "ok")
         await asyncio.sleep(config.ASSISTANT_CHECK_INTERVAL)
