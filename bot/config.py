@@ -76,7 +76,7 @@ AI_SUMMARY_MAX_MESSAGES = int(os.getenv("AI_SUMMARY_MAX_MESSAGES", "300"))
 # طرفِ مقابل (اگه تپ کنه) بتونن تشخیص بدن پیام واقعاً از طرفِ خودِ owner
 # نبوده. برای غیرفعال‌کردنِ کامل: AI_TAG_ENABLED=false
 AI_TAG_ENABLED = os.getenv("AI_TAG_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
-AI_TAG_TEXT = os.getenv("AI_TAG_TEXT", "🤖 این پیام رو هوش‌مصنوعی نوشته، نه خودِ من")
+AI_TAG_TEXT = os.getenv("AI_TAG_TEXT", "🤖")
 
 # چند پیامِ آخرِ هر مکالمه (کاربر+منشی، جمعاً) به‌عنوانِ context برای پاسخِ
 # هوش‌مصنوعیِ منشی نگه داشته بشه - تا جواب‌ها به همدیگه ربط داشته باشن، نه
