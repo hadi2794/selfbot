@@ -47,7 +47,8 @@ async def _ask_and_reply(event, messages, *, thinking_text="🤔 در حال ف�
         return await event.edit(f"❌ خطا در ارتباط با سرویسِ هوش مصنوعی: {e}")
     if not answer:
         return await event.edit("⚠️ مدل پاسخِ خالی برگردوند")
-    await event.edit(f"🤖 {answer}")
+    tagged_text, entities = ai.tag_ai_text(f"🤖 {answer}")
+    await event.edit(tagged_text, formatting_entities=entities)
 
 
 @client.on(events.NewMessage(outgoing=True, pattern=pat(["پرسش", "ask"])))
@@ -212,4 +213,5 @@ async def ai_translate_handler(event):
         return await event.edit(f"❌ خطا در ارتباط با سرویسِ هوش مصنوعی: {e}")
     if not answer:
         return await event.edit("⚠️ مدل پاسخِ خالی برگردوند")
-    await event.edit(f"🌐🤖 ترجمه‌ی هوشمند ({lang}):\n{answer}")
+    tagged_text, entities = ai.tag_ai_text(f"🌐🤖 ترجمه‌ی هوشمند ({lang}):\n{answer}")
+    await event.edit(tagged_text, formatting_entities=entities)

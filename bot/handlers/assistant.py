@@ -510,11 +510,6 @@ _ASSISTANT_AI_SYSTEM = (
     "کوتاه (حداکثر ۲-۳ جمله) و به همون زبانِ پیامِ ورودی بده، بدون مقدمه‌چینی."
 )
 
-# اسپویلرِ تلگرامی (سینتکسِ ||...||): تا لمس نشه به‌صورتِ یه تکه‌ی کوچیکِ محو/تار
-# نمایش داده می‌شه، پس ظاهرِ کلیِ پیام رو خراب نمی‌کنه - ولی هرکسی که بخواد
-# بفهمه این پاسخ از هوش مصنوعی بوده، کافیه لمسش کنه تا آشکار بشه.
-_AI_WATERMARK = "||🤖||"
-
 
 @client.on(events.NewMessage(incoming=True))
 async def assistant_autoreply(event):
@@ -544,6 +539,7 @@ async def assistant_autoreply(event):
                 await asyncio.sleep(delay)
 
         reply_text = assistant_state["text"]
+        used_ai = False
         if assistant_state["ai_mode"]:
             try:
                 incoming_text = event.raw_text or ""
@@ -562,7 +558,8 @@ async def assistant_autoreply(event):
                 ]
                 ai_answer = await ai.ask_ai(messages, max_tokens=300)
                 if ai_answer:
-                    reply_text = f"{ai_answer}\n{_AI_WATERMARK}"
+                    reply_text = ai_answer
+                    used_ai = True
                     _remember_exchange(hist_key, incoming_text, ai_answer)
             except (ai.AIDisabledError, ai.AIRequestError):
                 _record_error()
@@ -571,11 +568,17 @@ async def assistant_autoreply(event):
         if not reply_text:
             return  # نه متنِ ثابتی هست، نه AI جواب داد
 
+        # فقط وقتی پاسخ واقعاً از AI اومده باشه (نه متنِ ثابتِ خودِ owner)
+        # برچسبِ مخفیِ «نوشته‌شده با AI» بهش اضافه می‌شه.
+        entities = None
+        if used_ai:
+            reply_text, entities = ai.tag_ai_text(reply_text)
+
         # قبل از await (نه بعدش) مارک می‌کنیم - نگاهِ بالا به تعریفِ
         # _auto_reply_in_flight برای توضیحِ کاملِ چرایی.
         _auto_reply_in_flight[event.chat_id] = _auto_reply_in_flight.get(event.chat_id, 0) + 1
         try:
-            await event.reply(reply_text)
+            await event.reply(reply_text, formatting_entities=entities)
         finally:
             remaining = _auto_reply_in_flight.get(event.chat_id, 1) - 1
             if remaining <= 0:

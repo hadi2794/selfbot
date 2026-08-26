@@ -12,9 +12,52 @@ bot/handlers/assistant.py برای پاسخِ خودکارِ هوشمند) فق�
 import json
 
 import aiohttp
+from telethon.helpers import add_surrogate, del_surrogate
+from telethon.tl.types import MessageEntitySpoiler
 
 from . import config
 from .runtime import get_http_session
+
+
+def tag_ai_text(text: str, tag_text: str | None = None):
+    """
+    یه برچسبِ «نوشته‌شده با AI» به انتهای متن اضافه می‌کنه، به‌صورتِ اسپویلِ
+    تلگرام (نوشته‌ای که پیش‌فرض محو/جمع‌شده‌ست و فقط با تپ‌کردن دیده می‌شه) -
+    نه یه پیشوندِ همیشه‌نمایان. برای این‌که هم خودِ owner بعداً موقعِ مرورِ
+    چت، هم طرفِ مقابل (اگه تپ کنه) بتونن تشخیص بدن این پیامِ خاص واقعاً از
+    طرفِ خودِ owner نبوده و هوش‌مصنوعی نوشتتش.
+
+    اگه AI_TAG_ENABLED=false باشه، متن بدون هیچ تغییری برگردونده می‌شه.
+
+    عمداً به‌جای وصله‌کردنِ متن با سینتکسِ مارک‌داونِ `||...||` (که اگه خودِ
+    پاسخِ AI هم یه کاراکترِ خاصِ مارک‌داون مثلِ `*`/`_` داشته باشه ممکنه اشتباه
+    پارس بشه و entityِ اسپویل رو خراب کنه)، مستقیم یه MessageEntitySpoiler با
+    آفستِ درست می‌سازیم. آفست/طول بر مبنایِ واحدهای UTF-16 محاسبه می‌شه - چون
+    تلگرام entityها رو این‌جوری می‌شمره، نه بر مبنایِ len() پایتون - وگرنه اگه
+    خودِ متنِ AI ایموجی یا هر کاراکترِ خارج از BMP داشته باشه (که در UTF-16 دو
+    واحدی‌ان ولی در پایتون یک کاراکتر حساب می‌شن)، اسپویل رو یه‌جایِ اشتباه
+    می‌ذاشت. add_surrogate/del_surrogate (همون‌هایی که خودِ مارک‌داونِ داخلیِ
+    تلتون هم برای همین منظور استفاده می‌کنه) دقیقاً همین تبدیل رو انجام می‌دن.
+
+    خروجی: (متنِ نهایی, entities) - مستقیم به پارامترِ formatting_entities
+    توی event.edit/event.reply/client.send_message بدید (اگه AI_TAG_ENABLED
+    خاموش باشه entities برابرِ None برمی‌گرده - یعنی رفتارِ عادی/پارسِ
+    مارک‌داونِ پیش‌فرض دست‌نخورده می‌مونه).
+    """
+    if not config.AI_TAG_ENABLED:
+        return text, None
+
+    tag_text = tag_text or config.AI_TAG_TEXT
+    separator = "\n\n"
+    full_text = text + separator + tag_text
+
+    surrogate_full = add_surrogate(full_text)
+    surrogate_tag = add_surrogate(tag_text)
+    offset = len(surrogate_full) - len(surrogate_tag)
+    length = len(surrogate_tag)
+
+    entities = [MessageEntitySpoiler(offset=offset, length=length)]
+    return del_surrogate(surrogate_full), entities
 
 
 class AIDisabledError(RuntimeError):

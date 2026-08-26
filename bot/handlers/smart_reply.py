@@ -124,10 +124,12 @@ async def _send_reply(event, args):
         return await event.edit("⏳ پیشنهاد منقضی شد. دوباره امتحان کنید.")
 
     try:
+        tagged_text, entities = ai.tag_ai_text(pending["text"])
         await event.client.send_message(
             chat_id,
-            pending["text"],
+            tagged_text,
             reply_to=pending["reply_to"],
+            formatting_entities=entities,
         )
         _pending_replies.pop(chat_id, None)
         await event.edit("✅ پاسخ ارسال شد.")
